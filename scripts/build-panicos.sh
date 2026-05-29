@@ -9,6 +9,12 @@ DIST="$REPO_ROOT/dist/norns-panicos"
 NORNS_DATA="$DIST/norns/data"
 NORNS_BIN="$DIST/norns/bin"
 
+# Default: download pre-built norns binaries from schwung-norns releases.
+# Set BUILD_FROM_SOURCE=1 to build norns + SC plugins from source (takes ~60-80 min via QEMU).
+BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
+PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/norns-move-prebuilt.tar.gz"
+SC_PLUGINS_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/sc-plugins-arm64.tar.gz"
+
 trap 'echo ""; echo "ERROR: Build failed — cleaning up..."; rm -rf "$DIST"; exit 1' ERR
 
 if ! command -v docker &>/dev/null; then
@@ -60,15 +66,28 @@ ${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c -o build/norns-input-bridg
 echo "[1/4] host binaries OK"
 '
 
-# ── 2. Build norns prebuilt tarball ─────────────────────────
+# ── 2. Norns prebuilt tarball ───────────────────────────────
 echo ""
-echo "--- [2/4] Building norns prebuilt tarball ---"
-"$SCRIPT_DIR/build-norns.sh"
+if [ "$BUILD_FROM_SOURCE" = "1" ]; then
+    echo "--- [2/4] Building norns prebuilt tarball (from source, slow) ---"
+    "$SCRIPT_DIR/build-norns.sh"
+else
+    echo "--- [2/4] Downloading norns prebuilt tarball ---"
+    mkdir -p "$REPO_ROOT/dist"
+    curl -fsSL "$PREBUILT_URL" -o "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz"
+    echo "[2/4] norns prebuilt OK"
+fi
 
-# ── 3. Build SC plugins ─────────────────────────────────────
+# ── 3. SC plugins ────────────────────────────────────────────
 echo ""
-echo "--- [3/4] Building SC plugins ---"
-"$SCRIPT_DIR/build-sc-plugins.sh"
+if [ "$BUILD_FROM_SOURCE" = "1" ]; then
+    echo "--- [3/4] Building SC plugins (from source, slow) ---"
+    "$SCRIPT_DIR/build-sc-plugins.sh"
+else
+    echo "--- [3/4] Downloading SC plugins ---"
+    curl -fsSL "$SC_PLUGINS_URL" -o "$REPO_ROOT/dist/sc-plugins-arm64.tar.gz"
+    echo "[3/4] SC plugins OK"
+fi
 
 # ── 4. Assemble package ──────────────────────────────────────
 echo ""
