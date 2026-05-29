@@ -121,7 +121,7 @@ static void send_enc(norns_state_t *s, uint8_t enc_id, int16_t delta) {
     frame[0] = 0;
     frame[1] = enc_id;
     frame[2] = (uint8_t)(delta & 0xFF);
-    frame[3] = (uint8_t)((delta >> 8) & 0xFF);
+    frame[3] = (uint8_t)(((uint16_t)delta >> 8) & 0xFF);
     (void)write(s->input_fd, frame, 4);
 }
 
@@ -224,11 +224,16 @@ static void stop_norns_processes(norns_state_t *s) {
     pid_t pids[] = { s->pid_matron, s->pid_sclang, s->pid_crone,
                      s->pid_input_bridge, s->pid_maiden };
     for (int i = 0; i < 5; i++) {
-        if (pids[i] > 0) kill(pids[i], SIGTERM);
+        if (pids[i] > 0) kill(-pids[i], SIGTERM);   /* SIGTERM to process group */
     }
     sleep(2);
     for (int i = 0; i < 5; i++) {
-        if (pids[i] > 0) waitpid(pids[i], NULL, WNOHANG);
+        if (pids[i] > 0) {
+            if (waitpid(pids[i], NULL, WNOHANG) == 0) {
+                kill(-pids[i], SIGKILL);              /* SIGKILL to process group */
+                waitpid(pids[i], NULL, 0);
+            }
+        }
     }
     s->pid_crone = s->pid_matron = s->pid_sclang = -1;
     s->pid_input_bridge = s->pid_maiden = -1;
@@ -258,8 +263,15 @@ static void pump_screen(norns_state_t *s) {
     /* Drain FIFO: keep only the latest frame */
     for (;;) {
         ssize_t n = read(s->screen_fd, packed, SCREEN_FRAME_SZ);
-        if (n == (ssize_t)SCREEN_FRAME_SZ) { memcpy(latest, packed, SCREEN_FRAME_SZ); got = 1; }
-        else break;
+        if (n == (ssize_t)SCREEN_FRAME_SZ) {
+            memcpy(latest, packed, SCREEN_FRAME_SZ);
+            got = 1;
+        } else if (n > 0) {
+            log_msg("screen: partial frame — skipping");
+            break;
+        } else {
+            break;  /* EAGAIN or error */
+        }
     }
     if (!got) return;
 
@@ -288,6 +300,7 @@ static void render_frame(norns_state_t *s) {
 /* ── Gamepad input ──────────────────────────────────────── */
 
 static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
+    if (!s->gc) return;
     int pressed = (ev->type == SDL_CONTROLLERBUTTONDOWN);
 
     switch (ev->button) {
@@ -475,6 +488,11 @@ int main(int argc, char *argv[]) {
             }
             if (ev.type == SDL_CONTROLLERDEVICEADDED && !s.gc) {
                 s.gc = SDL_GameControllerOpen(ev.cdevice.which);
+            }
+            if (ev.type == SDL_CONTROLLERDEVICEREMOVED && s.gc) {
+                SDL_GameControllerClose(s.gc);
+                s.gc = NULL;
+                log_msg("game controller disconnected");
             }
         }
 
