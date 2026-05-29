@@ -9,6 +9,36 @@ DIST="$REPO_ROOT/dist/norns-panicos"
 NORNS_DATA="$DIST/norns/data"
 NORNS_BIN="$DIST/norns/bin"
 
+trap 'echo ""; echo "ERROR: Build failed — cleaning up..."; rm -rf "$DIST"; exit 1' ERR
+
+if ! command -v docker &>/dev/null; then
+    echo "ERROR: Docker is not installed or not in PATH." >&2
+    exit 1
+fi
+
+check_dependencies() {
+    local missing=0
+    for f in \
+        "src/norns-panicos.c" \
+        "src/norns-input-bridge.c" \
+        "$SCRIPT_DIR/Dockerfile.panicos" \
+        "$SCRIPT_DIR/build-norns.sh" \
+        "$SCRIPT_DIR/build-sc-plugins.sh" \
+        "$REPO_ROOT/ports/portmaster/Norns.sh" \
+        "$REPO_ROOT/ports/portmaster/control.txt"; do
+        if [ ! -f "$f" ]; then
+            echo "ERROR: Missing required file: $f" >&2
+            missing=$((missing + 1))
+        fi
+    done
+    if [ "$missing" -gt 0 ]; then
+        echo "ERROR: $missing required file(s) missing. Check repo state." >&2
+        return 1
+    fi
+}
+
+check_dependencies || exit 1
+
 echo "=== Building norns-panicos PortMaster package ==="
 
 # ── 1. Cross-compile host binaries ──────────────────────────
@@ -43,6 +73,18 @@ echo "--- [3/4] Building SC plugins ---"
 # ── 4. Assemble package ──────────────────────────────────────
 echo ""
 echo "--- [4/4] Assembling norns-panicos package ---"
+
+# Verify build outputs exist before assembly
+for tarball in \
+    "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz" \
+    "$REPO_ROOT/dist/sc-plugins-arm64.tar.gz"; do
+    if [ ! -f "$tarball" ]; then
+        echo "ERROR: Expected build output not found: $tarball" >&2
+        echo "       Check build-norns.sh or build-sc-plugins.sh output above." >&2
+        exit 1
+    fi
+done
+
 rm -rf "$DIST"
 mkdir -p \
     "$NORNS_BIN" \
