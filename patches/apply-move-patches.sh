@@ -684,23 +684,21 @@ PYEOF
 # and continue instead — crone still works for output; input just returns
 # silence.  Works correctly when a USB interface IS present.
 echo "  Patching crone/src/Client.h (ADC connection optional)"
-python3 -c "
-with open('crone/src/Client.h', 'r') as f:
-    src = f.read()
-
-src = src.replace(
-    'if (ports == nullptr) {\n            throw std::runtime_error(\"no ADC ports found\");\n        }',
-    'if (ports == nullptr) {\n            std::cerr << \"crone: no ADC ports, continuing without audio input\" << std::endl;\n            return;\n        }'
-)
-src = src.replace(
-    'std::cerr << \"failed to connect input port \" << i << std::endl;\n                throw std::runtime_error(\"connectAdcPorts() failed\");',
-    'std::cerr << \"crone: ADC port \" << i << \" connect failed, skipping\" << std::endl;'
-)
-
-with open('crone/src/Client.h', 'w') as f:
-    f.write(src)
-print('    done')
-"
+# Robust single-line replacements. The previous multi-line exact-block python
+# .replace() silently no-op'd in the build container (newline/whitespace
+# sensitivity), shipping an unpatched crone that crashes on capture-less boards.
+# These sed edits match just the unique throw statements and then we VERIFY the
+# result, aborting loudly if it didn't take.
+sed -i \
+  -e 's@throw std::runtime_error("no ADC ports found");@{ std::cerr << "crone: no ADC ports, continuing without audio input" << std::endl; return; }@' \
+  -e 's@throw std::runtime_error("connectAdcPorts() failed");@std::cerr << "crone: ADC port " << i << " connect failed, skipping" << std::endl;@' \
+  crone/src/Client.h
+if grep -q "continuing without audio input" crone/src/Client.h; then
+    echo "    done (verified)"
+else
+    echo "ERROR: crone ADC patch did not apply to crone/src/Client.h" >&2
+    exit 1
+fi
 
 # ── 9. Fix missing #include <string> in BufDiskWorker.h (GCC 15+) ──
 if ! grep -q '#include <string>' crone/src/BufDiskWorker.h 2>/dev/null; then
