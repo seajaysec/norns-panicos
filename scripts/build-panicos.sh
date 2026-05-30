@@ -9,9 +9,14 @@ DIST="$REPO_ROOT/dist/norns-panicos"
 NORNS_DATA="$DIST/norns/data"
 NORNS_BIN="$DIST/norns/bin"
 
-# Default: download pre-built norns binaries from schwung-norns releases.
-# Set BUILD_FROM_SOURCE=1 to build norns + SC plugins from source (takes ~60-80 min via QEMU).
-BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
+# Default: build norns from source so the crone ADC-optional patch is baked in
+# via patches/apply-move-patches.sh. That patch is REQUIRED on capture-less
+# boards (H700/rg35xx etc.) — without it crone aborts on startup with
+# "connectAdcPorts() failed" and the engine's audio never reaches the speaker.
+# Building from source takes ~60-80 min via QEMU.
+# Set BUILD_FROM_SOURCE=0 to download the prebuilt instead, but the published
+# prebuilt must already carry that patch or the guard below aborts the build.
+BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-1}"
 PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/norns-move-prebuilt.tar.gz"
 SC_PLUGINS_URL=""  # SC plugins are provided by the OS — not bundled
 
@@ -118,6 +123,22 @@ chmod +x "$NORNS_BIN/norns-panicos" "$NORNS_BIN/norns-input-bridge" \
 
 # norns prebuilt binaries
 tar xzf "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz" -C "$NORNS_DATA/"
+
+# Guard: never ship a crone without the ADC-optional patch. On boards with no
+# audio-input device an unpatched crone aborts at startup (connectAdcPorts()
+# failed) and there is no audio. This catches a stale/unpatched prebuilt before
+# it gets packaged (the exact bug that shipped in an earlier zip).
+_crone="$NORNS_DATA/norns/build/crone/crone"
+if [ ! -f "$_crone" ]; then
+    echo "ERROR: crone binary missing from prebuilt: $_crone" >&2
+    exit 1
+fi
+if ! strings "$_crone" 2>/dev/null | grep -q "continuing without audio input"; then
+    echo "ERROR: crone is NOT patched (crone-adc-optional missing)." >&2
+    echo "       Build from source (BUILD_FROM_SOURCE=1) or publish a patched prebuilt." >&2
+    exit 1
+fi
+echo "  crone ADC-optional patch: present"
 
 
 # Starter scripts (cloned from source)
