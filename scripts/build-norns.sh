@@ -52,7 +52,7 @@ sh /patches/apply-move-patches.sh /home/we/norns
 echo ""
 echo "=== Building norns (matron + crone) ==="
 python3 waf configure
-python3 waf build
+python3 waf build -j$(nproc)
 
 echo ""
 echo "=== Cloning and building Maiden ==="
