@@ -135,7 +135,7 @@ if [ ! -f "$_crone" ]; then
     echo "ERROR: crone binary missing from prebuilt: $_crone" >&2
     exit 1
 fi
-if ! strings "$_crone" 2>/dev/null | grep -q "continuing without audio input"; then
+if ! grep -qa "continuing without audio input" "$_crone"; then
     echo "ERROR: crone is NOT patched (crone-adc-optional missing)." >&2
     echo "       Build from source (BUILD_FROM_SOURCE=1) or publish a patched prebuilt." >&2
     exit 1
