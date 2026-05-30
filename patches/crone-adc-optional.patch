@@ -1,0 +1,26 @@
+--- a/crone/src/Client.h
++++ b/crone/src/Client.h
+@@ -162,20 +162,22 @@ public:
+     void connectAdcPorts() {
+         const char **ports = jack_get_ports(client, nullptr, nullptr,
+                                             JackPortIsPhysical | JackPortIsOutput);
+
+         if (ports == nullptr) {
+-            throw std::runtime_error("no ADC ports found");
++            std::cerr << "crone: no ADC ports found, continuing without audio input" << std::endl;
++            return;
+         }
+
+         for (int i = 0; i < NumIns; ++i) {
+             if (i > 1) {
+                 break;
+             }
+             if (jack_connect(client, ports[i], jack_port_name(inPort[i]))) {
+-
+                 std::cerr << "failed to connect input port " << i << std::endl;
+-                throw std::runtime_error("connectAdcPorts() failed");
++                std::cerr << "crone: skipping ADC port " << i << std::endl;
+             }
+         }
+         free(ports);
+     }

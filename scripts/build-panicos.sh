@@ -13,7 +13,7 @@ NORNS_BIN="$DIST/norns/bin"
 # Set BUILD_FROM_SOURCE=1 to build norns + SC plugins from source (takes ~60-80 min via QEMU).
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
 PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/norns-move-prebuilt.tar.gz"
-SC_PLUGINS_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/sc-plugins-arm64.tar.gz"
+SC_PLUGINS_URL=""  # SC plugins are provided by the OS — not bundled
 
 trap 'echo ""; echo "ERROR: Build failed — cleaning up..."; rm -rf "$DIST"; exit 1' ERR
 
@@ -27,6 +27,7 @@ check_dependencies() {
     for f in \
         "src/norns-panicos.c" \
         "src/norns-input-bridge.c" \
+        "src/norns-push2-display.c" \
         "$SCRIPT_DIR/Dockerfile.panicos" \
         "$SCRIPT_DIR/build-norns.sh" \
         "$SCRIPT_DIR/build-sc-plugins.sh" \
@@ -59,10 +60,12 @@ docker run --rm \
     norns-panicos-builder \
     sh -c '
 set -e
-SDL_FLAGS=$(pkg-config --cflags --libs sdl2 2>/dev/null || echo "-lSDL2")
-JACK_FLAGS=$(pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
-${CROSS_PREFIX}gcc -O2 -Wall src/norns-panicos.c      -o build/norns-panicos      $SDL_FLAGS -lpthread -lm
-${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c -o build/norns-input-bridge $JACK_FLAGS
+SDL_FLAGS=$(pkg-config --cflags --libs sdl2    2>/dev/null || echo "-lSDL2")
+JACK_FLAGS=$(pkg-config --cflags --libs jack   2>/dev/null || echo "-ljack")
+USB_FLAGS=$(pkg-config --cflags --libs libusb-1.0 2>/dev/null || echo "-lusb-1.0")
+${CROSS_PREFIX}gcc -O2 -Wall src/norns-panicos.c       -o build/norns-panicos       $SDL_FLAGS -lpthread -lm
+${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c  -o build/norns-input-bridge  $JACK_FLAGS
+${CROSS_PREFIX}gcc -O2 -Wall src/norns-push2-display.c -o build/norns-push2-display $USB_FLAGS
 echo "[1/4] host binaries OK"
 '
 
@@ -78,16 +81,9 @@ else
     echo "[2/4] norns prebuilt OK"
 fi
 
-# ── 3. SC plugins ────────────────────────────────────────────
+# ── 3. SC plugins — provided by the OS, not bundled ─────────
 echo ""
-if [ "$BUILD_FROM_SOURCE" = "1" ]; then
-    echo "--- [3/4] Building SC plugins (from source, slow) ---"
-    "$SCRIPT_DIR/build-sc-plugins.sh"
-else
-    echo "--- [3/4] Downloading SC plugins ---"
-    curl -fsSL "$SC_PLUGINS_URL" -o "$REPO_ROOT/dist/sc-plugins-arm64.tar.gz"
-    echo "[3/4] SC plugins OK"
-fi
+echo "--- [3/4] SC plugins: using system-installed (skipping bundle) ---"
 
 # ── 4. Assemble package ──────────────────────────────────────
 echo ""
@@ -95,11 +91,10 @@ echo "--- [4/4] Assembling norns-panicos package ---"
 
 # Verify build outputs exist before assembly
 for tarball in \
-    "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz" \
-    "$REPO_ROOT/dist/sc-plugins-arm64.tar.gz"; do
+    "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz"; do
     if [ ! -f "$tarball" ]; then
         echo "ERROR: Expected build output not found: $tarball" >&2
-        echo "       Check build-norns.sh or build-sc-plugins.sh output above." >&2
+        echo "       Check build-norns.sh output above." >&2
         exit 1
     fi
 done
@@ -115,17 +110,15 @@ mkdir -p \
     "$DIST/norns/cfg"
 
 # Host binaries
-cp "$REPO_ROOT/build/norns-panicos"      "$NORNS_BIN/"
-cp "$REPO_ROOT/build/norns-input-bridge" "$NORNS_BIN/"
-chmod +x "$NORNS_BIN/norns-panicos" "$NORNS_BIN/norns-input-bridge"
+cp "$REPO_ROOT/build/norns-panicos"        "$NORNS_BIN/"
+cp "$REPO_ROOT/build/norns-input-bridge"  "$NORNS_BIN/"
+cp "$REPO_ROOT/build/norns-push2-display" "$NORNS_BIN/"
+chmod +x "$NORNS_BIN/norns-panicos" "$NORNS_BIN/norns-input-bridge" \
+         "$NORNS_BIN/norns-push2-display"
 
 # norns prebuilt binaries
 tar xzf "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz" -C "$NORNS_DATA/"
 
-# SC plugins
-mkdir -p "$NORNS_DATA/.local/share/SuperCollider/Extensions"
-tar xzf "$REPO_ROOT/dist/sc-plugins-arm64.tar.gz" \
-    -C "$NORNS_DATA/.local/share/SuperCollider/"
 
 # Starter scripts (cloned from source)
 echo "  Cloning starter scripts..."
@@ -167,9 +160,9 @@ cp "$REPO_ROOT/ports/portmaster/control.txt" "$DIST/"
 echo ""
 echo "--- Packaging ---"
 mkdir -p "$REPO_ROOT/dist"
-(cd "$REPO_ROOT/dist" && tar czf norns-panicos.tar.gz norns-panicos/)
+(cd "$REPO_ROOT/dist" && zip -r norns-panicos.zip norns-panicos/)
 
 echo ""
 echo "=== Build complete ==="
-echo "Output: dist/norns-panicos.tar.gz"
-ls -lh "$REPO_ROOT/dist/norns-panicos.tar.gz"
+echo "Output: dist/norns-panicos.zip"
+ls -lh "$REPO_ROOT/dist/norns-panicos.zip"

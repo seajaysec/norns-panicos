@@ -34,8 +34,16 @@ fi
 echo "$LAUNCH_COUNT" > "$LAUNCH_COUNT_FILE"
 mkdir -p "$GAMEDIR/logs" "$GAMEDIR/cfg"
 
-# Generate sclang_conf.yaml with the actual $HOME path for this device.
-# SC include paths must be absolute — they cannot use shell variable expansion.
+# Generate sclang_conf.yaml with absolute paths for this device.
+# Also auto-detect double-nested system extension dirs (OS packaging bug where
+# each plugin ships both a top-level .sc file AND a Name/Name/Classes/ tree),
+# and exclude the inner copy to prevent duplicate class errors.
+EXCL="    - $HOME/.local/share/SuperCollider/Extensions"
+for _d in /usr/share/SuperCollider/Extensions/*/; do
+    _n=$(basename "$_d")
+    [ -d "${_d}${_n}" ] && EXCL="$EXCL
+    - ${_d}${_n}"
+done
 cat > "$HOME/norns/sclang_conf.yaml" << EOF
 includePaths:
     - $HOME/norns/sc/core
@@ -43,11 +51,15 @@ includePaths:
     - $HOME/norns/sc
     - $HOME/dust
 excludePaths:
-    []
+$EXCL
 postInlinePaths: []
 EOF
+unset EXCL _d _n
 
-chmod +x ./bin/norns-panicos ./bin/norns-input-bridge 2>/dev/null
+# FAT32 does not preserve execute bits — chmod every norns binary after extraction
+chmod +x ./bin/norns-panicos ./bin/norns-input-bridge ./bin/norns-push2-display 2>/dev/null
+find "$HOME/norns/build" -type f -exec chmod +x {} \; 2>/dev/null || true
+chmod +x "$HOME/maiden/maiden" 2>/dev/null || true
 
 $GPTOKEYB "norns-panicos" &
 pm_platform_helper "./bin/norns-panicos"

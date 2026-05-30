@@ -44,8 +44,9 @@
 #define FIFO_SCREEN   "/tmp/norns-screen-1"
 #define FIFO_INPUT    "/tmp/norns-input-1"
 #define FIFO_GRID     "/tmp/norns-grid-1"
-#define FIFO_MIDI_IN  "/tmp/midi-to-chroot-1"
-#define FIFO_MIDI_OUT "/tmp/midi-from-chroot-1"
+#define FIFO_MIDI_IN     "/tmp/midi-to-chroot-1"
+#define FIFO_MIDI_OUT    "/tmp/midi-from-chroot-1"
+#define FIFO_SCREEN_P2   "/tmp/norns-screen-push2"  /* tee for Push 2 display */
 
 #define STICK_DEADZONE   8192
 #define TRIGGER_THRESH   8192
@@ -62,16 +63,20 @@ typedef struct {
 
     int screen_fd;
     int input_fd;
+    int push2_screen_fd;  /* tee of screen FIFO → norns-push2-display */
 
     uint8_t selected_enc;   /* 0=E1  1=E2  2=E3 */
     int     select_held;
     int     select_was_combo;
 
+    pid_t pid_jackd;
     pid_t pid_crone;
     pid_t pid_matron;
     pid_t pid_sclang;
+    int   sclang_stdin_wr;   /* write end of sclang's stdin pipe — never close while running */
     pid_t pid_input_bridge;
     pid_t pid_maiden;
+    pid_t pid_push2_display;
 
     char norns_dir[512];   /* $HOME/norns */
     char bin_dir[512];     /* directory containing this binary */
@@ -101,8 +106,9 @@ static int make_fifo(const char *path) {
 }
 
 static int create_fifos(norns_state_t *s) {
-    s->screen_fd = make_fifo(FIFO_SCREEN);
-    s->input_fd  = make_fifo(FIFO_INPUT);
+    s->screen_fd       = make_fifo(FIFO_SCREEN);
+    s->input_fd        = make_fifo(FIFO_INPUT);
+    s->push2_screen_fd = make_fifo(FIFO_SCREEN_P2);
     (void)make_fifo(FIFO_GRID);
     (void)make_fifo(FIFO_MIDI_IN);
     (void)make_fifo(FIFO_MIDI_OUT);
@@ -151,13 +157,45 @@ static void send_crone_ready(void) {
     close(sock);
 }
 
+/* ── Forward declarations (needed by pump_for_ms before their definitions) ── */
+static void pump_screen(norns_state_t *s);
+static void render_frame(norns_state_t *s);
+static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev);
+static void poll_axes(norns_state_t *s);
+
+/* Run the display loop for `ms` milliseconds — keeps the screen live
+ * during startup waits so the norns splash animation is visible while
+ * SuperCollider boots.  Processes SDL_QUIT so the user can abort early. */
+static void pump_for_ms(norns_state_t *s, int ms) {
+    Uint32 deadline = SDL_GetTicks() + (Uint32)ms;
+    SDL_Event ev;
+    while (s->running && SDL_GetTicks() < deadline) {
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_QUIT) { s->running = 0; return; }
+            if (ev.type == SDL_CONTROLLERBUTTONDOWN || ev.type == SDL_CONTROLLERBUTTONUP)
+                handle_button(s, &ev.cbutton);
+            if (ev.type == SDL_CONTROLLERDEVICEADDED && !s->gc)
+                s->gc = SDL_GameControllerOpen(ev.cdevice.which);
+        }
+        poll_axes(s);
+        pump_screen(s);
+        render_frame(s);
+        SDL_Delay(16);  /* ~60fps during wait */
+    }
+}
+
 /* ── Process management ─────────────────────────────────── */
 
 static pid_t spawn_proc(const char *path, char *const argv[]) {
     pid_t pid = fork();
     if (pid < 0) { log_msg("fork failed"); return -1; }
     if (pid == 0) {
-        /* Child: inject FIFO env vars, then exec */
+        /* Child: inject FIFO env vars, then exec.
+         * Redirect stdin from /dev/null — none of our child processes need it,
+         * and sclang's REPL thread quits immediately if stdin is a broken pipe
+         * (ENOTSUP), which PortMaster's pm_platform_helper provides. */
+        int dn = open("/dev/null", O_RDONLY);
+        if (dn >= 0) { dup2(dn, STDIN_FILENO); close(dn); }
         setenv("NORNS_SCREEN_FIFO",  FIFO_SCREEN,  1);
         setenv("NORNS_INPUT_FIFO",   FIFO_INPUT,   1);
         setenv("NORNS_MIDI_OUT_FIFO",FIFO_MIDI_OUT,1);
@@ -185,31 +223,76 @@ static void start_norns_processes(norns_state_t *s) {
     snprintf(maiden_app,  sizeof(maiden_app),  "%s/../maiden/app/build",         s->norns_dir);
     snprintf(maiden_doc,  sizeof(maiden_doc),  "%s/doc",                         s->norns_dir);
 
+    /* 0. jackd — start before crone so we own its lifecycle.
+     * Playback-only on hw:0 (H616 codec); ALSA falls back gracefully when
+     * no capture device is available.  scsynth connects to this jackd for
+     * audio output even when crone crashes on ADC port connection. */
+    { char *av[] = { "jackd", "-T", "-d", "alsa", "-r", "48000", "-p", "1024", "-n", "2", NULL };
+      s->pid_jackd = spawn_proc("jackd", av); }
+    log_msg("jackd started");
+    pump_for_ms(s, 2000);  /* wait for JACK to initialise before crone connects */
+
     /* 1. crone (JACK audio routing — must start before sclang) */
     { char *av[] = { crone_path, NULL };
       s->pid_crone = spawn_proc(crone_path, av); }
-    log_msg("crone started"); sleep(2);
+    log_msg("crone started");
+    pump_for_ms(s, 1000);
 
     /* 2. matron (Lua VM + Cairo) via ws-wrapper */
     { char *av[] = { ws_path, "ws://*:5555", matron_path, NULL };
       s->pid_matron = spawn_proc(ws_path, av); }
-    log_msg("matron started"); sleep(1);
+    log_msg("matron started");
+    pump_for_ms(s, 1000);
 
-    /* 3. sclang (manages scsynth — wait 20 s for SC to boot on ARM) */
-    { char *av[] = { "sclang", "-l", sclang_conf, NULL };
-      s->pid_sclang = spawn_proc("sclang", av); }
-    log_msg("sclang started"); sleep(20);
+    /* 3. sclang — give it a persistent pipe as stdin so the REPL thread
+     * never gets EOF/ENOTSUP (both cause an immediate quit).  The parent
+     * holds the write end open for the lifetime of the norns session. */
+    { int pp[2] = {-1, -1};
+      if (pipe(pp) != 0) { pp[0] = pp[1] = -1; }
+      pid_t pid = fork();
+      if (pid < 0) { log_msg("fork failed"); }
+      if (pid == 0) {
+          /* child: read end → stdin, then exec sclang */
+          if (pp[0] >= 0) { dup2(pp[0], STDIN_FILENO); close(pp[0]); }
+          if (pp[1] >= 0) close(pp[1]);
+          int dn = open("/dev/null", O_RDONLY);
+          /* only use /dev/null if pipe creation failed */
+          if (pp[0] < 0 && dn >= 0) dup2(dn, STDIN_FILENO);
+          if (dn >= 0) close(dn);
+          setenv("NORNS_SCREEN_FIFO",  FIFO_SCREEN,  1);
+          setenv("NORNS_INPUT_FIFO",   FIFO_INPUT,   1);
+          setenv("NORNS_MIDI_OUT_FIFO",FIFO_MIDI_OUT,1);
+          setsid();
+          char *av[] = { "sclang", "-l", sclang_conf, NULL };
+          execvp("sclang", av);
+          fprintf(stderr, "[norns-panicos] execvp sclang: %s\n", strerror(errno));
+          _exit(127);
+      }
+      /* parent: close read end, keep write end so sclang never sees EOF */
+      if (pp[0] >= 0) close(pp[0]);
+      if (s->sclang_stdin_wr >= 0) close(s->sclang_stdin_wr);
+      s->sclang_stdin_wr = pp[1];
+      s->pid_sclang = pid; }
+    log_msg("sclang started");
+    pump_for_ms(s, 20000);
 
     /* 4. /crone/ready fallback — in case Crone.sc missed the window */
     send_crone_ready();
-    sleep(1);
+    pump_for_ms(s, 1000);
 
     /* 5. norns-input-bridge (JACK MIDI → input FIFO for external devices) */
     { char *av[] = { bridge_path, FIFO_INPUT, FIFO_MIDI_IN, NULL };
       s->pid_input_bridge = spawn_proc(bridge_path, av); }
     log_msg("norns-input-bridge started");
 
-    /* 6. maiden (web IDE on port 5000) */
+    /* 6. norns-push2-display (draws norns screen to Push 2 at 30fps if present) */
+    { char p2_path[512];
+      snprintf(p2_path, sizeof(p2_path), "%s/norns-push2-display", s->bin_dir);
+      char *av[] = { p2_path, FIFO_SCREEN_P2, NULL };
+      s->pid_push2_display = spawn_proc(p2_path, av); }
+    log_msg("norns-push2-display started");
+
+    /* 7. maiden (web IDE on port 5000) */
     { char *av[] = { maiden_path, "server",
                      "--port", "5000",
                      "--data", dust_dir,
@@ -222,12 +305,13 @@ static void start_norns_processes(norns_state_t *s) {
 
 static void stop_norns_processes(norns_state_t *s) {
     pid_t pids[] = { s->pid_matron, s->pid_sclang, s->pid_crone,
-                     s->pid_input_bridge, s->pid_maiden };
-    for (int i = 0; i < 5; i++) {
+                     s->pid_input_bridge, s->pid_maiden, s->pid_push2_display,
+                     s->pid_jackd };
+    for (int i = 0; i < 7; i++) {
         if (pids[i] > 0) kill(-pids[i], SIGTERM);   /* SIGTERM to process group */
     }
     sleep(2);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         if (pids[i] > 0) {
             if (waitpid(pids[i], NULL, WNOHANG) == 0) {
                 kill(-pids[i], SIGKILL);              /* SIGKILL to process group */
@@ -235,8 +319,10 @@ static void stop_norns_processes(norns_state_t *s) {
             }
         }
     }
-    s->pid_crone = s->pid_matron = s->pid_sclang = -1;
-    s->pid_input_bridge = s->pid_maiden = -1;
+    /* Close the sclang stdin pipe so sclang gets EOF and exits cleanly */
+    if (s->sclang_stdin_wr >= 0) { close(s->sclang_stdin_wr); s->sclang_stdin_wr = -1; }
+    s->pid_jackd = s->pid_crone = s->pid_matron = s->pid_sclang = -1;
+    s->pid_input_bridge = s->pid_maiden = s->pid_push2_display = -1;
 }
 
 static void restart_norns(norns_state_t *s) {
@@ -247,9 +333,15 @@ static void restart_norns(norns_state_t *s) {
 
 static void check_processes(norns_state_t *s) {
     int status;
+    /* Reap crone if it exited (ADC port failure on playback-only devices) but
+     * don't restart — crone crashing doesn't take down scsynth or the Lua VM.
+     * The crone-adc-optional patch in apply-move-patches.sh fixes this properly
+     * once the norns prebuilt is rebuilt from source. */
     if (s->pid_crone > 0 && waitpid(s->pid_crone, &status, WNOHANG) > 0) {
-        log_msg("crone crashed — restarting"); restart_norns(s);
-    } else if (s->pid_matron > 0 && waitpid(s->pid_matron, &status, WNOHANG) > 0) {
+        log_msg("crone exited (ADC port unavailable) — continuing without audio input");
+        s->pid_crone = -1;
+    }
+    if (s->pid_matron > 0 && waitpid(s->pid_matron, &status, WNOHANG) > 0) {
         log_msg("matron crashed — restarting"); restart_norns(s);
     }
 }
@@ -274,6 +366,10 @@ static void pump_screen(norns_state_t *s) {
         }
     }
     if (!got) return;
+
+    /* Tee raw frame to Push 2 display process (non-blocking, drop if full) */
+    if (s->push2_screen_fd >= 0)
+        (void)write(s->push2_screen_fd, latest, SCREEN_FRAME_SZ);
 
     /* Unpack 4-bit greyscale → RGB24.
      * Each byte holds two pixels: high nybble = left pixel, low = right.
@@ -314,17 +410,24 @@ static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     case SDL_CONTROLLER_BUTTON_A:
         send_key(s, 2, pressed); break;
 
-    /* D-pad left/right → selected encoder +/-1 */
+    /* D-pad left/right → selected encoder ±2.
+     * Delta 2 maps to one norns UI detent: the patched matron encoder
+     * accumulator counts quadrature pulse-pairs (2 pulses per detent),
+     * so delta 1 is sub-threshold and delta 2 fires exactly one enc() call. */
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-        if (pressed) send_enc(s, s->selected_enc, -1); break;
+        if (pressed) send_enc(s, s->selected_enc, -2);
+        break;
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-        if (pressed) send_enc(s, s->selected_enc,  1); break;
+        if (pressed) send_enc(s, s->selected_enc,  2);
+        break;
 
     /* D-pad up/down → E1 always (quick menu scroll regardless of selection) */
     case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        if (pressed) send_enc(s, 0,  1); break;
+        if (pressed) send_enc(s, 0,  2);
+        break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        if (pressed) send_enc(s, 0, -1); break;
+        if (pressed) send_enc(s, 0, -2);
+        break;
 
     /* Select = restart; Select+Start = exit */
     case SDL_CONTROLLER_BUTTON_BACK:
@@ -366,17 +469,18 @@ static void poll_axes(norns_state_t *s) {
     else if (r1)                   s->selected_enc = 2;
     /* R2 unassigned */
 
-    /* Left stick Y → selected encoder (velocity-scaled, throttled to STICK_THROTTLE).
-     * SDL2 axis convention: stick up = negative value. Negate so up = positive delta. */
+    /* Left stick X → selected encoder (velocity-scaled, throttled to STICK_THROTTLE).
+     * SDL2 axis convention: right = positive, left = negative.
+     * Right stick = increment (positive delta), left = decrement (negative delta). */
     if (s->frame % STICK_THROTTLE == 0) {
-        int16_t ly = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_LEFTY);
-        if (abs(ly) > STICK_DEADZONE) {
+        int16_t lx = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_LEFTX);
+        if (abs(lx) > STICK_DEADZONE) {
             int16_t delta;
-            int a = abs(ly);
+            int a = abs(lx);
             if      (a < 16384) delta = 1;
             else if (a < 24576) delta = 2;
             else                delta = 3;
-            if (ly > 0) delta = (int16_t)(-delta);  /* up = positive in norns */
+            if (lx < 0) delta = (int16_t)(-delta);  /* left = negative delta */
             send_enc(s, s->selected_enc, delta);
         }
     }
@@ -457,9 +561,10 @@ int main(int argc, char *argv[]) {
 
     norns_state_t s;
     memset(&s, 0, sizeof(s));
-    s.screen_fd = s.input_fd = -1;
-    s.pid_crone = s.pid_matron = s.pid_sclang = -1;
-    s.pid_input_bridge = s.pid_maiden = -1;
+    s.screen_fd = s.input_fd = s.push2_screen_fd = -1;
+    s.sclang_stdin_wr = -1;
+    s.pid_jackd = s.pid_crone = s.pid_matron = s.pid_sclang = -1;
+    s.pid_input_bridge = s.pid_maiden = s.pid_push2_display = -1;
     s.selected_enc = 0;
     s.running = 1;
     s.frame   = 0;
@@ -514,9 +619,10 @@ int main(int argc, char *argv[]) {
     if (s.window)   SDL_DestroyWindow(s.window);
     SDL_Quit();
 
-    if (s.screen_fd >= 0) close(s.screen_fd);
-    if (s.input_fd  >= 0) close(s.input_fd);
-    unlink(FIFO_SCREEN); unlink(FIFO_INPUT);
+    if (s.screen_fd       >= 0) close(s.screen_fd);
+    if (s.input_fd        >= 0) close(s.input_fd);
+    if (s.push2_screen_fd >= 0) close(s.push2_screen_fd);
+    unlink(FIFO_SCREEN); unlink(FIFO_INPUT); unlink(FIFO_SCREEN_P2);
     unlink(FIFO_GRID); unlink(FIFO_MIDI_IN); unlink(FIFO_MIDI_OUT);
 
     return 0;

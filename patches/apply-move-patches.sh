@@ -652,7 +652,57 @@ if grep -q 'typedef void \*lo_message' matron/src/event_types.h 2>/dev/null; the
     sed -i '/^typedef void \*lo_message/d' matron/src/event_types.h
 fi
 
-# ── 8. Fix missing #include <string> in BufDiskWorker.h (GCC 15+) ──
+# ── 8. Fix select.lua: replace GNU find -printf with BusyBox-compatible equivalent ──
+# BusyBox find does not support -printf "%P\n".  Replace with -print piped
+# through sed to strip the leading path, producing the same relative output.
+echo "  Patching lua/core/menu/select.lua (BusyBox-compatible find)"
+python3 << 'PYEOF'
+path = 'lua/core/menu/select.lua'
+with open(path) as f:
+    src = f.read()
+src = src.replace(
+    '-name "*.lua" -printf "%P\\n"',
+    '-name "*.lua" -print'
+)
+src = src.replace(
+    "'grep -Ev \"/(lib|data|crow|test|docs)/\" | ' ..\n                   'sort',",
+    "'sed \"s@.*/dust/code/@@\" | grep -Ev \"/(lib|data|crow|test|docs)/\" | ' ..\n                   'sort',"
+)
+# Also fix hardcoded /home/we path — use paths.code (set correctly at runtime)
+src = src.replace(
+    "table.insert(t,'/home/we/dust/code/' .. filename)",
+    "table.insert(t,paths.code .. filename)"
+)
+with open(path, 'w') as f:
+    f.write(src)
+print('    done')
+PYEOF
+
+# ── 9. Make crone ADC port connection non-fatal ──────────────────────
+# connectAdcPorts() throws when no physical capture ports exist (e.g. a
+# playback-only device with no USB audio interface attached).  Make it warn
+# and continue instead — crone still works for output; input just returns
+# silence.  Works correctly when a USB interface IS present.
+echo "  Patching crone/src/Client.h (ADC connection optional)"
+python3 -c "
+with open('crone/src/Client.h', 'r') as f:
+    src = f.read()
+
+src = src.replace(
+    'if (ports == nullptr) {\n            throw std::runtime_error(\"no ADC ports found\");\n        }',
+    'if (ports == nullptr) {\n            std::cerr << \"crone: no ADC ports, continuing without audio input\" << std::endl;\n            return;\n        }'
+)
+src = src.replace(
+    'std::cerr << \"failed to connect input port \" << i << std::endl;\n                throw std::runtime_error(\"connectAdcPorts() failed\");',
+    'std::cerr << \"crone: ADC port \" << i << \" connect failed, skipping\" << std::endl;'
+)
+
+with open('crone/src/Client.h', 'w') as f:
+    f.write(src)
+print('    done')
+"
+
+# ── 9. Fix missing #include <string> in BufDiskWorker.h (GCC 15+) ──
 if ! grep -q '#include <string>' crone/src/BufDiskWorker.h 2>/dev/null; then
     echo "  Adding #include <string> to BufDiskWorker.h (GCC 15 fix)"
     sed -i '1s/^/#include <string>\n/' crone/src/BufDiskWorker.h

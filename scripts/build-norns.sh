@@ -39,8 +39,10 @@ set -e
 
 echo "=== Cloning norns ==="
 cd /home/we
-git clone --depth 1 https://github.com/monome/norns.git
+# Pin to the commit matching the prebuilt tarball (git hash from matron startup log)
+git clone https://github.com/monome/norns.git
 cd norns
+git checkout 529b4e39
 git submodule update --init --recursive
 
 echo ""
