@@ -82,6 +82,61 @@ for _g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
 done
 unset _g
 
+# One-time low-latency audio drop-ins (persist in the PanicOS rw overlay).
+# PanicOS defaults the built-in H616 codec to a 1024-frame period (~21ms);
+# norns is a live instrument, so install a 128-frame codec period + matching
+# graph quantum (~2.7ms). Written once; the audio stack is only restarted when
+# we just created them, so normal launches aren't disrupted. Delete both files
+# (and restart wireplumber/pipewire) to revert to PanicOS stock latency.
+_wp="/usr/share/wireplumber/wireplumber.conf.d/95-norns-codec-lowlatency.conf"
+_pw="/etc/pipewire/pipewire.conf.d/51-norns-lowlatency.conf"
+_ll_new=0
+if [ ! -f "$_wp" ]; then
+    mkdir -p "$(dirname "$_wp")" 2>/dev/null
+    cat > "$_wp" 2>/dev/null <<'WPCONF'
+monitor.alsa.rules = [
+  {
+    matches = [
+      { node.name = "~alsa_output.*codec_sound_card0.*" }
+    ]
+    actions = {
+      update-props = {
+        api.alsa.period-size = 128
+        api.alsa.headroom    = 128
+      }
+    }
+  }
+]
+WPCONF
+    [ -s "$_wp" ] && _ll_new=1
+fi
+if [ ! -f "$_pw" ]; then
+    mkdir -p "$(dirname "$_pw")" 2>/dev/null
+    cat > "$_pw" 2>/dev/null <<'PWCONF'
+context.properties = {
+    default.clock.quantum     = 128
+    default.clock.min-quantum = 32
+    default.clock.max-quantum = 2048
+}
+PWCONF
+    [ -s "$_pw" ] && _ll_new=1
+fi
+if [ "$_ll_new" = 1 ]; then
+    killall wireplumber pipewire pipewire-pulse 2>/dev/null
+    for _i in $(seq 1 15); do
+        pgrep -x pipewire >/dev/null 2>&1 && pgrep -x wireplumber >/dev/null 2>&1 && break
+        sleep 1
+    done
+fi
+unset _wp _pw _ll_new _i
+
+# Audio latency: request a small PipeWire quantum for norns' own clients (this
+# is per-app and reverts when norns exits — NOT a global force). 128 frames
+# @48kHz ≈ 2.7ms, matching monome's image. Lower = tighter timing but more
+# xrun-prone; this SoC (Allwinner H700, quad Cortex-A53 ~1.4GHz) is roughly a
+# Pi 3B+ peer, so 128 is a sane floor — drop to 64 (~1.3ms) only for light patches.
+export PIPEWIRE_QUANTUM=128/48000
+
 # Promote audio threads to SCHED_FIFO. PanicOS has no rtkit, so PipeWire's
 # data-loop otherwise runs SCHED_OTHER and starves on the RT kernel (periodic
 # xruns). crone/scsynth are spawned ~15s after launch, so poll in the bg.
