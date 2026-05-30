@@ -76,7 +76,9 @@ echo "[1/4] host binaries OK"
 
 # ── 2. Norns prebuilt tarball ───────────────────────────────
 echo ""
-if [ "$BUILD_FROM_SOURCE" = "1" ]; then
+if [ "${REUSE_PREBUILT:-0}" = "1" ] && [ -f "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz" ]; then
+    echo "--- [2/4] Reusing existing dist/norns-move-prebuilt.tar.gz (REUSE_PREBUILT=1) ---"
+elif [ "$BUILD_FROM_SOURCE" = "1" ]; then
     echo "--- [2/4] Building norns prebuilt tarball (from source, slow) ---"
     "$SCRIPT_DIR/build-norns.sh"
 else
@@ -178,12 +180,18 @@ cp "$REPO_ROOT/ports/portmaster/Norns.sh"    "$DIST/"
 cp "$REPO_ROOT/ports/portmaster/control.txt" "$DIST/"
 
 # ── 5. Package ───────────────────────────────────────────────
+# PortMaster expects Norns.sh + control.txt + norns/ at the ZIP ROOT so they
+# extract straight into /roms/ports/. Zip the staging CONTENTS, not the staging
+# dir (a wrapping norns-panicos/ dir makes the installer nest the port one level
+# too deep / fail to find Norns.sh).
 echo ""
 echo "--- Packaging ---"
 mkdir -p "$REPO_ROOT/dist"
-(cd "$REPO_ROOT/dist" && zip -r norns-panicos.zip norns-panicos/)
+rm -f "$REPO_ROOT/dist/norns-panicos.zip"
+( cd "$DIST" && zip -rq "$REPO_ROOT/dist/norns-panicos.zip" Norns.sh control.txt norns )
 
 echo ""
 echo "=== Build complete ==="
-echo "Output: dist/norns-panicos.zip"
-ls -lh "$REPO_ROOT/dist/norns-panicos.zip"
+echo "Output: $REPO_ROOT/dist/norns-panicos.zip"
+ls -lh "$REPO_ROOT/dist/norns-panicos.zip" 2>/dev/null || true
+exit 0
