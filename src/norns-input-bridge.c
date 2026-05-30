@@ -273,7 +273,6 @@ int main(int argc, char *argv[]) {
     /* Connect to system MIDI capture and any already-connected Push 2 */
     jack_connect(client, "system:midi_capture_1", "norns-input:midi_in");
     try_connect_push2();
-    try_connect_sc_output();
 
     fprintf(stderr, "norns-input-bridge: JACK MIDI active\n");
 
