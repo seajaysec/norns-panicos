@@ -69,7 +69,7 @@ SDL_FLAGS=$(pkg-config --cflags --libs sdl2    2>/dev/null || echo "-lSDL2")
 JACK_FLAGS=$(pkg-config --cflags --libs jack   2>/dev/null || echo "-ljack")
 USB_FLAGS=$(pkg-config --cflags --libs libusb-1.0 2>/dev/null || echo "-lusb-1.0")
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-panicos.c       -o build/norns-panicos       $SDL_FLAGS -lpthread -lm
-${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c  -o build/norns-input-bridge  $JACK_FLAGS
+${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c  -o build/norns-input-bridge  $JACK_FLAGS $USB_FLAGS -lpthread
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-push2-display.c -o build/norns-push2-display $USB_FLAGS
 echo "[1/4] host binaries OK"
 '

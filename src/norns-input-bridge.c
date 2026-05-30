@@ -1,7 +1,15 @@
 /*
- * norns-input-bridge — Translates MIDI from Move into Norns encoder/key events
+ * norns-input-bridge — Translates Push 2 / MIDI into Norns encoder/key/grid events
  *
- * JACK MIDI client: reads from system:midi_capture via JACK
+ * Push 2 path (primary on PanicOS): the PipeWire "Midi-Bridge" silently drops
+ * hardware MIDI before it reaches JACK clients, so we talk to the Push 2 over
+ * libusb directly — claiming USB MIDI interface 2 (EP 0x82 in, 0x02 out), the
+ * same way norns-push2-display drives the display on interface 0.
+ *   - input:  EP 0x82 USB-MIDI packets → process_midi_msg() → input FIFO
+ *   - LED:    /tmp/norns-grid-1 (128B, 16x8, level 0-15) → pad note-ons on EP 0x02
+ *
+ * JACK MIDI path (fallback for any device PipeWire does forward) is kept.
+ *
  * Writes: /tmp/norns-input-<slot>    (4-byte frames: [type][id][val_lo][val_hi])
  *
  * Usage: norns-input-bridge <input_fifo> [midi_fifo]
@@ -14,8 +22,10 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
 #include <jack/jack.h>
 #include <jack/midiport.h>
+#include <libusb-1.0/libusb.h>
 
 static volatile int running = 1;
 static jack_client_t *client = NULL;
@@ -28,9 +38,44 @@ static int push2_grid_mode = 1;  /* 1=Grid (pads→monome), 0=MIDI (pads→type-
 static int viewport_x = 0;       /* current grid viewport offset (multiples of 8) */
 static int viewport_y = 0;
 
+/* ── Push 2 USB MIDI ─────────────────────────────────────────────────────── */
+#define PUSH2_VID         0x2982
+#define PUSH2_PID         0x1967
+#define PUSH2_MIDI_IFACE  2
+#define PUSH2_EP_IN       0x82
+#define PUSH2_EP_OUT      0x02
+#define GRID_W            16     /* emulated monome grid is 16x8 */
+#define GRID_H            8
+#define GRID_FIFO         "/tmp/norns-grid-1"
+
+static libusb_context       *g_usb    = NULL;
+static libusb_device_handle *g_push2  = NULL;
+static pthread_mutex_t       g_usb_lock = PTHREAD_MUTEX_INITIALIZER;
+static int                   g_grid_fd = -1;
+static uint8_t               g_last_pad[64];   /* last colour sent per pad (idx = rfb*8+col) */
+static int                   g_dbg = 0;        /* set if /tmp/push2dbg exists at startup */
+
+/* Display scaling mode — knob 8 cycles it; norns-push2-display reads the file. */
+#define SCALE_FILE   "/tmp/norns-push2-scale"
+#define NUM_SCALE_MODES 3
+static int g_scale_fd   = -1;
+static int g_scale_mode = 0;
+static int g_scale_accum = 0;
+
+static void write_scale_mode(void) {
+    if (g_scale_fd < 0) return;
+    uint8_t b = (uint8_t)g_scale_mode;
+    pwrite(g_scale_fd, &b, 1, 0);
+    if (g_dbg) fprintf(stderr, "push2: scale mode → %d\n", g_scale_mode);
+}
+
+/* Put Push 2 into User mode so we own the pad/button LEDs (spec §SysEx). */
+static const uint8_t USER_MODE_SYSEX[] =
+    {0xF0,0x00,0x21,0x1D,0x01,0x01,0x0A,0x01,0xF7};
+
 static void handle_signal(int sig) { (void)sig; running = 0; }
 
-/* Scan JACK output ports for Push 2 and connect to our input */
+/* Scan JACK output ports for Push 2 and connect to our input (fallback path) */
 static void try_connect_push2(void) {
     if (!client) return;
     const char **ports = jack_get_ports(client, NULL,
@@ -40,11 +85,9 @@ static void try_connect_push2(void) {
         if (strstr(ports[i], "Push 2") || strstr(ports[i], "Push2") ||
                 strstr(ports[i], "push2")) {
             int rc = jack_connect(client, ports[i], "norns-input:midi_in");
-            if (rc == 0 || rc == EEXIST) {
-                fprintf(stderr, "norns-input-bridge: Push 2 MIDI connected: %s\n",
+            if (rc == 0 || rc == EEXIST)
+                fprintf(stderr, "norns-input-bridge: Push 2 JACK MIDI connected: %s\n",
                         ports[i]);
-                push2_connected = 1;
-            }
         }
     }
     jack_free(ports);
@@ -91,6 +134,24 @@ static void process_midi_msg(const uint8_t *msg, size_t len) {
             if (delta != 0) send_input(0, enc_id, (int16_t)delta);
         }
 
+        /* Push 2 encoder 8 (CC 78) → cycle display scaling mode (accumulate
+         * detents so one notch ≈ one mode step). */
+        if (cc == 78) {
+            int d = 0;
+            if (val >= 1 && val <= 63)  d =  (int)val;
+            else if (val >= 65)         d =  (int)val - 128;
+            g_scale_accum += d;
+            if (g_scale_accum >= 8) {
+                g_scale_accum = 0;
+                g_scale_mode = (g_scale_mode + 1) % NUM_SCALE_MODES;
+                write_scale_mode();
+            } else if (g_scale_accum <= -8) {
+                g_scale_accum = 0;
+                g_scale_mode = (g_scale_mode + NUM_SCALE_MODES - 1) % NUM_SCALE_MODES;
+                write_scale_mode();
+            }
+        }
+
         /* CC 43/42/41 → key K1/K2/K3 (Move track buttons) */
         if (cc >= 41 && cc <= 43) {
             uint8_t key_id = 43 - cc;
@@ -105,23 +166,23 @@ static void process_midi_msg(const uint8_t *msg, size_t len) {
                         push2_grid_mode ? "Grid" : "MIDI");
             }
 
-            /* Push 2 arrow buttons → monome grid viewport (8-key pages).
-             * Arrow Up/Down and Octave Up/Down navigate the Y axis;
-             * Arrow Left/Right navigate the X axis. */
-            if (val > 0) {
-                if      (cc == 44) viewport_x = (viewport_x >= 8)  ? viewport_x - 8 : 0;
-                else if (cc == 45) viewport_x = (viewport_x < 120) ? viewport_x + 8 : 120;
-                else if (cc == 46) viewport_y = (viewport_y >= 8)  ? viewport_y - 8 : 0;
-                else if (cc == 47) viewport_y = (viewport_y < 120) ? viewport_y + 8 : 120;
-                /* Octave Down (CC54) = lower rows of grid; Octave Up (CC55) = higher */
-                else if (cc == 54) viewport_y = (viewport_y < 120) ? viewport_y + 8 : 120;
-                else if (cc == 55) viewport_y = (viewport_y >= 8)  ? viewport_y - 8 : 0;
+            /* norns three keys, mirrored on both display button rows:
+             *   lower (under screen):    CC 20 → K2, CC 21 → K3, CC 22 → K1
+             *   upper (under encoders):  CC 102→ K2, CC 103→ K3, CC 104→ K1 */
+            if      (cc == 20 || cc == 102) send_input(1, 1, val > 0 ? 1 : 0);  /* K2 */
+            else if (cc == 21 || cc == 103) send_input(1, 2, val > 0 ? 1 : 0);  /* K3 */
+            else if (cc == 22 || cc == 104) send_input(1, 0, val > 0 ? 1 : 0);  /* K1 */
 
-                if (cc >= 44 && cc <= 47) {
-                    fprintf(stderr,
-                            "norns-input-bridge: Push 2 viewport x=%d y=%d\n",
-                            viewport_x, viewport_y);
-                }
+            /* Push 2 arrow buttons → monome grid viewport (8-key page on X).
+             * Grid is 16 wide, so X offset is only 0 or 8; no Y paging. */
+            if (val > 0) {
+                if      (cc == 44) viewport_x = (viewport_x >= 8) ? viewport_x - 8 : 0;
+                else if (cc == 45) viewport_x = (viewport_x < 8) ? viewport_x + 8 : 8;
+                viewport_y = 0;
+
+                if (cc >= 44 && cc <= 47)
+                    fprintf(stderr, "norns-input-bridge: Push 2 viewport x=%d\n",
+                            viewport_x);
             }
         }
     }
@@ -159,6 +220,222 @@ static void process_midi_msg(const uint8_t *msg, size_t len) {
     }
 }
 
+/* ── Push 2 USB MIDI helpers ─────────────────────────────────────────────── */
+
+/* Send raw MIDI bytes to the Push 2 as USB-MIDI event packets (EP 0x02) on the
+ * given virtual cable. In User mode the controls/LEDs live on the User port
+ * (cable 1); the mode-set SysEx goes on cable 0.
+ * Caller must hold g_usb_lock and pass a live handle. */
+static void push2_usb_send(libusb_device_handle *h, uint8_t cable,
+                           const uint8_t *msg, int len) {
+    uint8_t pkt[4];
+    int xfr;
+    uint8_t cn = (uint8_t)(cable << 4);
+    /* Channel-voice message (status 0x80-0xEF): one packet, CIN = status nibble */
+    if (len == 3 && msg[0] >= 0x80 && msg[0] < 0xF0) {
+        pkt[0] = cn | ((msg[0] >> 4) & 0x0F);
+        pkt[1] = msg[0]; pkt[2] = msg[1]; pkt[3] = msg[2];
+        libusb_bulk_transfer(h, PUSH2_EP_OUT, pkt, 4, &xfr, 50);
+        return;
+    }
+    /* SysEx / generic: 3-byte groups (CIN 4), final group CIN 5/6/7 by length */
+    int i = 0;
+    while (i < len) {
+        int rem = len - i;
+        if (rem > 3) {
+            pkt[0] = cn | 0x04;
+            pkt[1] = msg[i]; pkt[2] = msg[i+1]; pkt[3] = msg[i+2];
+            i += 3;
+        } else {
+            pkt[0] = cn | ((rem == 1) ? 0x05 : (rem == 2) ? 0x06 : 0x07);
+            pkt[1] = msg[i];
+            pkt[2] = (rem > 1) ? msg[i+1] : 0;
+            pkt[3] = (rem > 2) ? msg[i+2] : 0;
+            i += rem;
+        }
+        libusb_bulk_transfer(h, PUSH2_EP_OUT, pkt, 4, &xfr, 50);
+    }
+}
+
+#define PUSH2_CABLE_LIVE  0   /* Live port */
+#define PUSH2_CABLE_USER  1   /* User port — controls + LEDs in User mode */
+
+/* Set one RGB palette entry (spec §Set LED Color Palette Entry). Each 8-bit
+ * component is split into 7 low bits + 1 high bit. */
+static void push2_palette_entry(libusb_device_handle *h, uint8_t idx,
+                                uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
+    uint8_t s[17] = {
+        0xF0,0x00,0x21,0x1D,0x01,0x01,0x03, idx,
+        (uint8_t)(r & 0x7F), (uint8_t)((r >> 7) & 1),
+        (uint8_t)(g & 0x7F), (uint8_t)((g >> 7) & 1),
+        (uint8_t)(b & 0x7F), (uint8_t)((b >> 7) & 1),
+        (uint8_t)(w & 0x7F), (uint8_t)((w >> 7) & 1),
+        0xF7
+    };
+    push2_usb_send(h, PUSH2_CABLE_LIVE, s, sizeof(s));
+}
+
+/* Two colour ramps so each grid half navigates distinctly. The Push 2 hard
+ * current-limits pads on USB bus power, so the ramp floor is high (~210/255). */
+static const uint8_t COLOUR_A[3] = {  0, 200, 255};   /* cyan  — left half  (viewport_x=0) */
+static const uint8_t COLOUR_B[3] = {255, 100,   0};   /* amber — right half (viewport_x=8) */
+#define PAL_A_BASE  0     /* indices  1..15 = COLOUR_A ramp */
+#define PAL_B_BASE  16    /* indices 17..31 = COLOUR_B ramp */
+#define LED_FLOOR   235   /* brightness of norns level 1 (0-255); level 15 = full */
+
+static void push2_program_ramp(libusb_device_handle *h, int base, const uint8_t *c) {
+    for (int i = 1; i <= 15; i++) {
+        int sc = LED_FLOOR + (i - 1) * (255 - LED_FLOOR) / 14;   /* LED_FLOOR..255 */
+        push2_palette_entry(h, (uint8_t)(base + i),
+                            (uint8_t)(c[0] * sc / 255),
+                            (uint8_t)(c[1] * sc / 255),
+                            (uint8_t)(c[2] * sc / 255), 0);
+    }
+}
+
+/* Reprogram the palette: index 0 off, two bright colour ramps for the halves. */
+static void push2_program_palette(libusb_device_handle *h) {
+    static const uint8_t REAPPLY[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x05,0xF7};
+    push2_palette_entry(h, 0, 0, 0, 0, 0);
+    push2_program_ramp(h, PAL_A_BASE, COLOUR_A);
+    push2_program_ramp(h, PAL_B_BASE, COLOUR_B);
+    push2_usb_send(h, PUSH2_CABLE_LIVE, REAPPLY, sizeof(REAPPLY));
+}
+
+static void push2_usb_close(void) {
+    pthread_mutex_lock(&g_usb_lock);
+    if (g_push2) {
+        libusb_release_interface(g_push2, PUSH2_MIDI_IFACE);
+        libusb_close(g_push2);
+        g_push2 = NULL;
+        push2_connected = 0;
+        fprintf(stderr, "norns-input-bridge: Push 2 USB MIDI closed\n");
+    }
+    pthread_mutex_unlock(&g_usb_lock);
+}
+
+static void push2_usb_try_open(void) {
+    pthread_mutex_lock(&g_usb_lock);
+    if (g_push2) { pthread_mutex_unlock(&g_usb_lock); goto done; }
+    libusb_device_handle *h =
+        libusb_open_device_with_vid_pid(g_usb, PUSH2_VID, PUSH2_PID);
+    if (h) {
+        libusb_set_auto_detach_kernel_driver(h, 1);
+        if (libusb_claim_interface(h, PUSH2_MIDI_IFACE) == 0) {
+            g_push2 = h;
+            push2_connected = 1;
+            push2_usb_send(h, PUSH2_CABLE_LIVE, USER_MODE_SYSEX, sizeof(USER_MODE_SYSEX));
+            push2_program_palette(h);
+            memset(g_last_pad, 0xFF, sizeof(g_last_pad));  /* force full repaint */
+            fprintf(stderr, "norns-input-bridge: Push 2 USB MIDI claimed (User mode)\n");
+        } else {
+            libusb_close(h);
+        }
+    }
+    pthread_mutex_unlock(&g_usb_lock);
+done:
+    return;
+}
+
+/* MIDI message length for a USB-MIDI Code Index Number */
+static int usbmidi_cin_len(uint8_t cin) {
+    switch (cin) {
+        case 0x5: case 0xF:                      return 1;
+        case 0x2: case 0x6: case 0xC: case 0xD:  return 2;
+        default:                                 return 3;
+    }
+}
+
+/* Background thread: read Push 2 input on EP 0x82, feed process_midi_msg(). */
+static void *push2_reader(void *arg) {
+    (void)arg;
+    uint8_t buf[64];
+    while (running) {
+        pthread_mutex_lock(&g_usb_lock);
+        libusb_device_handle *h = g_push2;
+        pthread_mutex_unlock(&g_usb_lock);
+        if (!h) {
+            push2_usb_try_open();
+            if (!g_push2) { usleep(500000); }
+            continue;
+        }
+        int xfr = 0;
+        int rc = libusb_bulk_transfer(h, PUSH2_EP_IN, buf, sizeof(buf), &xfr, 500);
+        if (rc == LIBUSB_ERROR_TIMEOUT) continue;
+        if (rc < 0) { push2_usb_close(); usleep(200000); continue; }
+        for (int i = 0; i + 4 <= xfr; i += 4) {
+            uint8_t cin = buf[i] & 0x0F;
+            int mlen = usbmidi_cin_len(cin);
+            if (g_dbg && buf[i+1] != 0xFE)   /* skip active-sensing spam */
+                fprintf(stderr, "push2 IN: cable=%d %02X %02X %02X (grid_mode=%d)\n",
+                        (buf[i] >> 4) & 0x0F, buf[i+1], buf[i+2], buf[i+3], push2_grid_mode);
+            process_midi_msg(&buf[i+1], (size_t)mlen);
+        }
+    }
+    return NULL;
+}
+
+/* norns grid level (0-15) + ramp base → Push 2 palette index (0 = off). */
+static uint8_t led_colour(uint8_t level, int base) {
+    if (level == 0) return 0;
+    if (level > 15) level = 15;
+    return (uint8_t)(base + level);
+}
+
+/* Read latest grid LED frame and paint the changed pads (rate-limited ~30Hz). */
+static void push2_led_pump(void) {
+    static int tick = 0;
+    if (++tick < 33) return;      /* main loop runs at ~1ms → ~30Hz */
+    tick = 0;
+
+    if (g_grid_fd < 0) {
+        g_grid_fd = open(GRID_FIFO, O_RDONLY | O_NONBLOCK);
+        if (g_grid_fd < 0) return;
+    }
+
+    static uint8_t grid[GRID_W * GRID_H];
+    static int have_grid = 0;
+    uint8_t tmp[GRID_W * GRID_H];
+    int new_frames = 0;
+    while (read(g_grid_fd, tmp, sizeof(tmp)) == (ssize_t)sizeof(tmp)) {
+        memcpy(grid, tmp, sizeof(tmp));
+        have_grid = 1;
+        new_frames++;
+    }
+    if (g_dbg && new_frames) {
+        int nz = 0; for (int k = 0; k < GRID_W * GRID_H; k++) if (grid[k]) nz++;
+        fprintf(stderr, "push2 GRID: %d frame(s), %d lit cells\n", new_frames, nz);
+    }
+    if (!have_grid) return;
+
+    int vx = viewport_x; if (vx > GRID_W - 8) vx = GRID_W - 8; if (vx < 0) vx = 0;
+    int base = (vx < 8) ? PAL_A_BASE : PAL_B_BASE;   /* colour by grid half */
+
+    pthread_mutex_lock(&g_usb_lock);
+    libusb_device_handle *h = g_push2;
+    int painted = 0;
+    if (h) {
+        for (int ny = 0; ny < 8; ny++) {
+            for (int nx = 0; nx < 8; nx++) {
+                int gx = nx + vx;
+                uint8_t col = led_colour(grid[ny * GRID_W + gx], base);
+                int rfb = 7 - ny;                 /* Push 2 row from bottom */
+                int idx = rfb * 8 + nx;
+                if (g_last_pad[idx] != col) {
+                    g_last_pad[idx] = col;
+                    uint8_t note = (uint8_t)(36 + rfb * 8 + nx);
+                    uint8_t m[3] = {0x90, note, col};
+                    push2_usb_send(h, PUSH2_CABLE_USER, m, 3);
+                    painted++;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_usb_lock);
+    if (g_dbg && painted)
+        fprintf(stderr, "push2 LED: painted %d pads (have_handle=%d)\n", painted, h ? 1 : 0);
+}
+
 static int jack_process(jack_nframes_t nframes, void *arg) {
     (void)arg;
     void *buf = jack_port_get_buffer(midi_port, nframes);
@@ -167,9 +444,8 @@ static int jack_process(jack_nframes_t nframes, void *arg) {
     jack_nframes_t count = jack_midi_get_event_count(buf);
     for (jack_nframes_t i = 0; i < count; i++) {
         jack_midi_event_t ev;
-        if (jack_midi_event_get(&ev, buf, i) == 0) {
+        if (jack_midi_event_get(&ev, buf, i) == 0)
             process_midi_msg(ev.buffer, ev.size);
-        }
     }
     return 0;
 }
@@ -215,6 +491,14 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
+    signal(SIGPIPE, SIG_IGN);
+
+    g_dbg = (access("/tmp/push2dbg", F_OK) == 0);
+    if (g_dbg) fprintf(stderr, "norns-input-bridge: Push 2 DEBUG logging on\n");
+
+    /* Scaling-mode state file shared with norns-push2-display */
+    g_scale_fd = open(SCALE_FILE, O_RDWR | O_CREAT, 0644);
+    if (g_scale_fd >= 0) write_scale_mode();
 
     input_fd = open(argv[1], O_RDWR | O_NONBLOCK);
     if (input_fd < 0) { perror("open input fifo"); return 1; }
@@ -230,62 +514,58 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "norns-input-bridge: INPUT=%s MIDI_FIFO=%s\n",
             argv[1], midi_fifo_fd >= 0 ? argv[2] : "none");
 
-    /* Open JACK client */
+    /* Push 2 USB MIDI (primary): claim interface 2, reader thread + LED pump */
+    pthread_t reader_thread;
+    int have_reader = 0;
+    if (libusb_init(&g_usb) == 0) {
+        if (pthread_create(&reader_thread, NULL, push2_reader, NULL) == 0)
+            have_reader = 1;
+        else
+            fprintf(stderr, "norns-input-bridge: failed to start Push 2 reader thread\n");
+    } else {
+        fprintf(stderr, "norns-input-bridge: libusb init failed (Push 2 USB disabled)\n");
+        g_usb = NULL;
+    }
+
+    /* JACK client (fallback for MIDI that PipeWire does forward) */
     jack_status_t status;
     client = jack_client_open("norns-input", JackNoStartServer, &status);
-    if (!client) {
-        fprintf(stderr, "norns-input-bridge: JACK client open failed (status=%d)\n", status);
-        /* Fall back to FIFO-only mode if JACK isn't available */
-        if (midi_fifo_fd < 0) {
-            fprintf(stderr, "norns-input-bridge: no MIDI source available, exiting\n");
-            close(input_fd);
-            return 1;
+    if (client) {
+        midi_port = jack_port_register(client, "midi_in",
+                                       JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
+        if (midi_port) {
+            jack_set_process_callback(client, jack_process, NULL);
+            jack_set_port_registration_callback(client, on_port_registered, NULL);
+            if (jack_activate(client) == 0) {
+                jack_connect(client, "system:midi_capture_1", "norns-input:midi_in");
+                try_connect_push2();
+                fprintf(stderr, "norns-input-bridge: JACK MIDI active\n");
+            } else {
+                fprintf(stderr, "norns-input-bridge: can't activate JACK client\n");
+                jack_client_close(client);
+                client = NULL;
+            }
+        } else {
+            jack_client_close(client);
+            client = NULL;
         }
-        fprintf(stderr, "norns-input-bridge: running in FIFO-only mode\n");
-        while (running) {
-            poll_midi_fifo(midi_fifo_fd);
-            usleep(1000);
-        }
-        close(input_fd);
-        close(midi_fifo_fd);
-        return 0;
+    } else {
+        fprintf(stderr, "norns-input-bridge: JACK unavailable (status=%d), Push 2/FIFO only\n",
+                status);
     }
 
-    midi_port = jack_port_register(client, "midi_in",
-                                   JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
-    if (!midi_port) {
-        fprintf(stderr, "norns-input-bridge: can't register MIDI port\n");
-        jack_client_close(client);
-        close(input_fd);
-        return 1;
-    }
-
-    jack_set_process_callback(client, jack_process, NULL);
-    jack_set_port_registration_callback(client, on_port_registered, NULL);
-
-    if (jack_activate(client)) {
-        fprintf(stderr, "norns-input-bridge: can't activate JACK client\n");
-        jack_client_close(client);
-        close(input_fd);
-        return 1;
-    }
-
-    /* Connect to system MIDI capture and any already-connected Push 2 */
-    jack_connect(client, "system:midi_capture_1", "norns-input:midi_in");
-    try_connect_push2();
-
-    fprintf(stderr, "norns-input-bridge: JACK MIDI active\n");
-
+    /* Unified service loop: poll host-MIDI FIFO + pump Push 2 LEDs */
     while (running) {
-        /* Also poll FIFO for on_midi host events (secondary path) */
-        if (midi_fifo_fd >= 0) {
-            poll_midi_fifo(midi_fifo_fd);
-        }
+        if (midi_fifo_fd >= 0) poll_midi_fifo(midi_fifo_fd);
+        push2_led_pump();
         usleep(1000);  /* 1ms */
     }
 
-    jack_deactivate(client);
-    jack_client_close(client);
+    if (client) { jack_deactivate(client); jack_client_close(client); }
+    if (have_reader) pthread_join(reader_thread, NULL);
+    push2_usb_close();
+    if (g_usb) libusb_exit(g_usb);
+    if (g_grid_fd >= 0) close(g_grid_fd);
     close(input_fd);
     if (midi_fifo_fd >= 0) close(midi_fifo_fd);
     return 0;

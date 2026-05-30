@@ -79,23 +79,52 @@ static void push2_close(libusb_device_handle *dev) {
     fprintf(stderr, "norns-push2-display: Push 2 display closed\n");
 }
 
-/* Scale norns 128×64 4-bit greyscale → 960×160 BGR565 and send one display frame. */
+/* Display scaling modes — knob 8 on the Push 2 cycles these (norns-input-bridge
+ * writes the selected index to /tmp/norns-push2-scale). Each gives the norns
+ * viewport rectangle (w,h,x,y) inside the 960×160 panel; outside = black. */
+#define SCALE_FILE "/tmp/norns-push2-scale"
+typedef struct { int w, h, x, y; } viewport_t;
+static viewport_t viewport_for_mode(int mode) {
+    switch (mode) {
+        case 1:  return (viewport_t){256, 128, (960-256)/2, (160-128)/2}; /* integer ×2 */
+        case 2:  return (viewport_t){960, 160, 0, 0};                     /* full stretch */
+        default: return (viewport_t){320, 160, (960-320)/2, 0};          /* aspect-fit 2:1 */
+    }
+}
+
+/* Read current scaling mode from the shared state file (default 0). */
+static int read_scale_mode(void) {
+    static int fd = -1;
+    if (fd < 0) fd = open(SCALE_FILE, O_RDONLY);
+    if (fd < 0) return 0;
+    unsigned char b = 0;
+    if (pread(fd, &b, 1, 0) == 1 && b < 3) return (int)b;
+    return 0;
+}
+
+/* Scale norns 128×64 4-bit greyscale into the selected viewport, send one frame. */
 static int push2_send_frame(libusb_device_handle *dev, const uint8_t *norns_frame) {
     static uint8_t line[PUSH2_LINE_SZ];
     int xfr, rc;
+    viewport_t v = viewport_for_mode(read_scale_mode());
 
     rc = libusb_bulk_transfer(dev, PUSH2_BULK_EP,
                               (uint8_t *)FRAME_HEADER, 16, &xfr, 100);
     if (rc) return rc;
 
     for (int py = 0; py < PUSH2_H; py++) {
-        /* Nearest-neighbour row mapping: full-width stretch */
-        int ny = (py * NORNS_H) / PUSH2_H;
+        int in_y = (py >= v.y && py < v.y + v.h);
+        int ny = in_y ? ((py - v.y) * NORNS_H) / v.h : 0;
 
         for (int px = 0; px < PUSH2_W; px++) {
-            int nx = (px * NORNS_W) / PUSH2_W;
-            uint8_t gray = (uint8_t)(norns_px(norns_frame, nx, ny) * 17);
-            uint16_t pix = gray_to_bgr565(gray);
+            uint16_t pix;
+            if (!in_y || px < v.x || px >= v.x + v.w) {
+                pix = gray_to_bgr565(0);            /* black bar (pillar/letterbox) */
+            } else {
+                int nx = ((px - v.x) * NORNS_W) / v.w;
+                uint8_t gray = (uint8_t)(norns_px(norns_frame, nx, ny) * 17);
+                pix = gray_to_bgr565(gray);
+            }
             line[px * 2]     = (uint8_t)(pix & 0xFF);
             line[px * 2 + 1] = (uint8_t)(pix >> 8);
         }
