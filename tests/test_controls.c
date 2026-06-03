@@ -261,6 +261,25 @@ static void test_context_overlay(void) {
     printf("  PASS test_context_overlay\n");
 }
 
+static void test_native_mode(void) {
+    controls_t c;
+    controls_defaults(&c);
+    assert(c.native_mode == 0);                       /* off by default */
+
+    const char *cfg =
+        "scheme = sticks\n"
+        "[sticks]\ne1 = none\ne2 = lstick\ne3 = rstick\n"
+        "[script:gamepong]\nmode = native\n";
+    char scheme[32] = "";
+    controls_find_scheme(cfg, scheme, sizeof(scheme));
+    controls_parse_scheme(&c, cfg, scheme);
+    assert(c.native_mode == 0);                       /* scheme alone: not native */
+
+    controls_parse_scheme(&c, cfg, "script:gamepong");
+    assert(c.native_mode == 1);                       /* overlay turns it on */
+    printf("  PASS test_native_mode\n");
+}
+
 int main(void) {
     printf("Running norns-controls tests...\n");
     test_defaults();
@@ -278,6 +297,7 @@ int main(void) {
     test_has_section();
     test_unknown_scheme_keeps_globals();
     test_context_overlay();
+    test_native_mode();
     printf("All tests passed.\n");
     return 0;
 }

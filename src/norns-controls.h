@@ -101,6 +101,9 @@ typedef struct {
      * context harness turns it on for the menu (which scrolls down=+) and for
      * any [script:NAME] that asks, leaving other contexts unaffected. */
     int          dpad_y_invert;
+    /* Phase 3: when set by a [script:NAME] overlay, the host routes the pad to
+     * the native HID FIFO and suppresses K/E emulation for that script. */
+    int          native_mode;
 } controls_t;
 
 /* Info about a load, for logging. */
@@ -135,6 +138,7 @@ static inline void controls_defaults(controls_t *c) {
     c->stick_accel_ramp  = 110;      /* sticks: smoother, longer ramp (~1.8s) */
     c->accel_max   = 5;              /* up to 5x faster when held */
     c->dpad_y_invert = 0;            /* off by default; [menu]/[script:*] flip it */
+    c->native_mode = 0;              /* emulation; [script:*] overlay opts in */
 }
 
 /* ── Pure mapping helpers (shared by the host and the tests) ──────────────── */
@@ -340,6 +344,12 @@ static inline int controls__assign(controls_t *c, const char *key, char *val) {
     if (!strcmp(key, "stick-accel-delay")) { c->stick_accel_delay = controls__clamp(atoi(val), 0, 600); return 1; }
     if (!strcmp(key, "stick-accel-ramp"))  { c->stick_accel_ramp  = controls__clamp(atoi(val), 1, 600); return 1; }
     if (!strcmp(key, "dpad-y-invert"))  { c->dpad_y_invert = atoi(val) ? 1 : 0;                       return 1; }
+    if (!strcmp(key, "mode")) {
+        char v[16]; strncpy(v, val, sizeof(v) - 1); v[sizeof(v) - 1] = '\0';
+        controls__canon(controls__trim(v));
+        c->native_mode = !strcmp(v, "native") ? 1 : 0;   /* anything else = emulation */
+        return 1;
+    }
     fprintf(stderr, "controls: unknown key '%s'\n", key);
     return 0;
 }
