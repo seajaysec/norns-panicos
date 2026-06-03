@@ -37,6 +37,7 @@
 #include <unistd.h>
 
 #include "norns-controls.h"
+#include "norns-hid.h"
 
 /* ── Constants ──────────────────────────────────────────── */
 
@@ -46,6 +47,7 @@
 
 #define FIFO_SCREEN   "/tmp/norns-screen-1"
 #define FIFO_INPUT    "/tmp/norns-input-1"
+#define FIFO_HID      "/tmp/norns-hid-1"   /* native-mode evdev frames → matron */
 #define FIFO_GRID     "/tmp/norns-grid-1"
 #define FIFO_MIDI_IN     "/tmp/midi-to-chroot-1"
 #define FIFO_MIDI_OUT    "/tmp/midi-from-chroot-1"
@@ -74,6 +76,7 @@ typedef struct {
 
     int screen_fd;
     int input_fd;
+    int hid_fd;           /* native-mode evdev frames → matron NORNS_HID_FIFO */
     int push2_screen_fd;  /* tee of screen FIFO → norns-push2-display */
 
     controls_t  controls;     /* active resolved mapping (per context)      */
@@ -85,6 +88,7 @@ typedef struct {
     enc_drive_t enc_drive[3]; /* per-encoder accel state                    */
     int     select_held;
     int     select_was_combo;
+    int     native_grab_was;  /* last /tmp/norns-native state (runtime pad.grab) */
 
     pid_t pid_jackd;
     pid_t pid_crone;
@@ -125,6 +129,7 @@ static int make_fifo(const char *path) {
 static int create_fifos(norns_state_t *s) {
     s->screen_fd       = make_fifo(FIFO_SCREEN);
     s->input_fd        = make_fifo(FIFO_INPUT);
+    s->hid_fd          = make_fifo(FIFO_HID);
     s->push2_screen_fd = make_fifo(FIFO_SCREEN_P2);
     (void)make_fifo(FIFO_GRID);
     (void)make_fifo(FIFO_MIDI_IN);
@@ -153,6 +158,14 @@ static void send_key(norns_state_t *s, uint8_t key_id, uint8_t state) {
     (void)write(s->input_fd, frame, 4);
 }
 
+/* Emit one evdev event on the native HID FIFO (non-blocking; dropped if full). */
+static void send_hid(norns_state_t *s, uint16_t type, uint16_t code, int16_t value) {
+    if (s->hid_fd < 0) return;
+    uint8_t frame[HID_FRAME_SZ];
+    hid_frame_encode(type, code, value, frame);
+    (void)write(s->hid_fd, frame, HID_FRAME_SZ);
+}
+
 /* ── OSC /crone/ready ───────────────────────────────────── */
 
 /* Fallback for Crone.sc not sending /crone/ready on time */
@@ -179,6 +192,7 @@ static void pump_screen(norns_state_t *s);
 static void render_frame(norns_state_t *s);
 static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev);
 static void poll_encoders(norns_state_t *s);
+static void poll_native_axes(norns_state_t *s);
 
 /* Run the display loop for `ms` milliseconds — keeps the screen live
  * during startup waits so the norns splash animation is visible while
@@ -195,6 +209,7 @@ static void pump_for_ms(norns_state_t *s, int ms) {
                 s->gc = SDL_GameControllerOpen(ev.cdevice.which);
         }
         poll_encoders(s);
+        poll_native_axes(s);
         pump_screen(s);
         render_frame(s);
         SDL_Delay(16);  /* ~60fps during wait */
@@ -215,6 +230,7 @@ static pid_t spawn_proc(const char *path, char *const argv[]) {
         if (dn >= 0) { dup2(dn, STDIN_FILENO); close(dn); }
         setenv("NORNS_SCREEN_FIFO",  FIFO_SCREEN,  1);
         setenv("NORNS_INPUT_FIFO",   FIFO_INPUT,   1);
+        setenv("NORNS_HID_FIFO",     FIFO_HID,     1);
         setenv("NORNS_MIDI_OUT_FIFO",FIFO_MIDI_OUT,1);
         setsid();
         execvp(path, argv);
@@ -278,6 +294,7 @@ static void start_norns_processes(norns_state_t *s) {
           if (dn >= 0) close(dn);
           setenv("NORNS_SCREEN_FIFO",  FIFO_SCREEN,  1);
           setenv("NORNS_INPUT_FIFO",   FIFO_INPUT,   1);
+          setenv("NORNS_HID_FIFO",     FIFO_HID,     1);
           setenv("NORNS_MIDI_OUT_FIFO",FIFO_MIDI_OUT,1);
           setsid();
           char *av[] = { "sclang", "-l", sclang_conf, NULL };
@@ -438,6 +455,35 @@ static uint8_t sdl_btn_bit(Uint8 button) {
     }
 }
 
+/* SDL button → abstract pad input, or -1 if it isn't a pad button we expose to
+ * native scripts. (L2/R2 are analog triggers, handled in poll_native_axes.) */
+static int sdl_btn_to_pad(Uint8 button) {
+    switch (button) {
+    case SDL_CONTROLLER_BUTTON_A:             return PAD_A;
+    case SDL_CONTROLLER_BUTTON_B:             return PAD_B;
+    case SDL_CONTROLLER_BUTTON_X:             return PAD_X;
+    case SDL_CONTROLLER_BUTTON_Y:             return PAD_Y;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return PAD_L1;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return PAD_R1;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK:     return PAD_L3;
+    case SDL_CONTROLLER_BUTTON_RIGHTSTICK:    return PAD_R3;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:       return PAD_DUP;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:     return PAD_DDOWN;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:     return PAD_DLEFT;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    return PAD_DRIGHT;
+    case SDL_CONTROLLER_BUTTON_BACK:          return PAD_SELECT;
+    case SDL_CONTROLLER_BUTTON_START:         return PAD_START;
+    default:                                  return -1;
+    }
+}
+
+/* Emit a pad button as a native HID key event. */
+static void send_pad_button(norns_state_t *s, int pad, int pressed) {
+    uint16_t type, code;
+    if (pad >= 0 && pad_input_to_evdev((pad_input_t)pad, &type, &code))
+        send_hid(s, type, code, (int16_t)(pressed ? 1 : 0));
+}
+
 /* Held button-pair tracking. handle_button only updates these bitmasks (and emits
  * the immediate tap detent, so a quick press isn't missed by the per-frame poll);
  * poll_encoders turns held directions into accelerating encoder motion. */
@@ -482,6 +528,7 @@ static void resolve_controls(norns_state_t *s) {
  * the patched menu.lua. Poll it cheaply (~every 6 frames); on change, re-resolve
  * the mapping so per-context overlays take effect. */
 #define CONTEXT_FILE "/tmp/norns-context"
+#define NATIVE_FILE  "/tmp/norns-native"   /* pad.grab()/release() runtime opt-in */
 static void poll_context(norns_state_t *s) {
     if (s->frame % 6 != 0) return;
     int fd = open(CONTEXT_FILE, O_RDONLY);
@@ -494,8 +541,47 @@ static void poll_context(norns_state_t *s) {
     if (strcmp(buf, s->context) != 0) {
         snprintf(s->context, sizeof(s->context), "%s", buf);
         resolve_controls(s);
+        unlink(NATIVE_FILE);          /* a script that exited can't strand native */
+        s->native_grab_was = 0;
         fprintf(stderr, "[norns-panicos] context: %s\n", s->context);
     }
+}
+
+/* Runtime native opt-in: pad.grab() writes "1" to /tmp/norns-native, pad.release()
+ * clears it. This overrides the config-derived native_mode for the running script
+ * (so a script you author can go native with no config edit). Polled with context. */
+static void poll_native_override(norns_state_t *s) {
+    if (s->frame % 6 != 0) return;
+    int fd = open(NATIVE_FILE, O_RDONLY);
+    if (fd < 0) return;
+    char buf[8] = {0};
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    int want = (n > 0 && buf[0] == '1');
+    if (want)                       s->controls.native_mode = 1;   /* grab forces on */
+    else if (s->native_grab_was)    s->controls.native_mode = 0;   /* explicit release */
+    s->native_grab_was = want;
+}
+
+/* In native mode, mirror the analog sticks (as ABS axes) and the L2/R2 triggers
+ * (as buttons) to HID. Emits only on change so the FIFO isn't flooded. */
+static void poll_native_axes(norns_state_t *s) {
+    if (!s->controls.native_mode || !s->gc) return;
+    static int last[6];   /* LX, LY, RX, RY, L2, R2 */
+    const struct { SDL_GameControllerAxis ax; uint16_t code; } sticks[4] = {
+        { SDL_CONTROLLER_AXIS_LEFTX,  EVA_ABS_X  },
+        { SDL_CONTROLLER_AXIS_LEFTY,  EVA_ABS_Y  },
+        { SDL_CONTROLLER_AXIS_RIGHTX, EVA_ABS_RX },
+        { SDL_CONTROLLER_AXIS_RIGHTY, EVA_ABS_RY },
+    };
+    for (int i = 0; i < 4; i++) {
+        int v = SDL_GameControllerGetAxis(s->gc, sticks[i].ax);
+        if (v != last[i]) { last[i] = v; send_hid(s, EV_ABS, sticks[i].code, (int16_t)v); }
+    }
+    int l2 = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > TRIGGER_THRESH;
+    int r2 = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > TRIGGER_THRESH;
+    if (l2 != last[4]) { last[4] = l2; send_hid(s, EV_KEY, EVB_BTN_TL2, (int16_t)l2); }
+    if (r2 != last[5]) { last[5] = r2; send_hid(s, EV_KEY, EVB_BTN_TR2, (int16_t)r2); }
 }
 
 /* +1 normally; -1 flips D-pad up/down when the active config asks (the menu and
@@ -508,6 +594,22 @@ static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     if (!s->gc) return;
     int pressed = (ev->type == SDL_CONTROLLERBUTTONDOWN);
     uint8_t bit = sdl_btn_bit(ev->button);
+
+    /* Native mode: the running script owns the raw pad. Route every pad button
+     * to the HID FIFO and suppress all K/E emulation.
+     *
+     * INTERIM (until Phase 1 frees a Menu/FN escape + Task 7): Select and Start
+     * are deliberately NOT routed — they fall through to the system-chord
+     * handler below so Select=restart / Select+Start=quit can still escape a
+     * native script. Once the reserved Menu/FN escape exists, Select/Start can
+     * join the native stream. */
+    if (s->controls.native_mode &&
+        ev->button != SDL_CONTROLLER_BUTTON_BACK &&
+        ev->button != SDL_CONTROLLER_BUTTON_START) {
+        int pad = sdl_btn_to_pad(ev->button);
+        if (pad >= 0) send_pad_button(s, pad, pressed);
+        return;
+    }
 
     /* L1/R1 as an encoder pair take precedence over any key binding on them. */
     if ((bit == BTN_L1 || bit == BTN_R1) && s->controls.shoulder_enc >= 0) {
@@ -576,6 +678,8 @@ static SDL_GameControllerAxis stick_axis_for_enc(const controls_t *c, int e) {
 static void poll_encoders(norns_state_t *s) {
     const controls_t *c = &s->controls;
     poll_context(s);
+    poll_native_override(s);        /* may flip native_mode (pad.grab) — before guard */
+    if (c->native_mode) return;     /* native mode: no encoder/key emulation */
 
     /* Resolve every button-pair to a per-encoder held direction. pair_event[e]=1
      * means the tap was already emitted on the event (D-pad / shoulders). */
@@ -816,6 +920,7 @@ int main(int argc, char *argv[]) {
         }
 
         poll_encoders(&s);
+        poll_native_axes(&s);
         pump_screen(&s);
         render_frame(&s);
 
