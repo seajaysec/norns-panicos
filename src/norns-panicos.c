@@ -9,12 +9,13 @@
  * Procs:   fork/exec crone, matron (via ws-wrapper), sclang,
  *          norns-input-bridge, maiden — all native (no chroot)
  *
- * Button mapping:
+ * Button mapping is configurable — see src/norns-controls.h and the config
+ * file (path from $NORNS_PANICOS_CONF, else $HOME/controls.conf). Defaults
+ * (dual-stick devices such as the RG35XX Pro):
  *   Y=K1  X=K2  A=K3  B=K1(alias)
- *   Hold L1 → E1 selected   Hold L2 → E2 selected   Hold R1 → E3 selected
- *   D-pad left/right  = selected encoder +-1
- *   D-pad up/down     = E1 +-1 always (quick menu scroll)
- *   Left stick Y      = selected encoder (velocity-scaled, throttled)
+ *   D-pad        = E1 (quick menu scroll, both axes)
+ *   Left stick   = E2 (velocity-scaled, throttled)
+ *   Right stick  = E3 (velocity-scaled, throttled)
  *   Select            = restart norns
  *   Select + Start    = exit to PortMaster
  */
@@ -35,6 +36,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "norns-controls.h"
+
 /* ── Constants ──────────────────────────────────────────── */
 
 #define NORNS_WIDTH      128
@@ -48,12 +51,20 @@
 #define FIFO_MIDI_OUT    "/tmp/midi-from-chroot-1"
 #define FIFO_SCREEN_P2   "/tmp/norns-screen-push2"  /* tee for Push 2 display */
 
-#define STICK_DEADZONE   8192
-#define TRIGGER_THRESH   8192
-#define STICK_THROTTLE   3     /* emit stick input every N frames (~20 Hz at 60 fps) */
 #define OSC_MATRON_PORT  8888
 
+/* Base scroll rate (detents/frame) for a held D-pad direction, before
+ * acceleration. ~0.12 @ ~60fps ≈ 7/s; a quick tap stays a single detent. */
+#define ENC_DPAD_BASE_RATE  0.12f
+
 /* ── State ──────────────────────────────────────────────── */
+
+/* Per-encoder drive state for the hold-to-accelerate model (poll_encoders). */
+typedef struct {
+    int8_t dir;          /* current held direction: -1, 0, +1            */
+    int    held_frames;  /* consecutive frames held in `dir`             */
+    float  phase;        /* fractional detent accumulator                */
+} enc_drive_t;
 
 typedef struct {
     SDL_Window         *window;
@@ -65,7 +76,13 @@ typedef struct {
     int input_fd;
     int push2_screen_fd;  /* tee of screen FIFO → norns-push2-display */
 
-    uint8_t selected_enc;   /* 0=E1  1=E2  2=E3 */
+    controls_t  controls;     /* active resolved mapping (per context)      */
+    char       *cfg_text;     /* retained config text for context re-resolve */
+    char        cfg_scheme[32];/* active [scheme] name                       */
+    char        context[64];  /* norns context: "menu" or the script name   */
+    uint8_t     dpad_btn;     /* held D-pad direction bitmask               */
+    uint8_t     shoulder_btn; /* held L1/R1 bitmask (bit0=L1, bit1=R1)      */
+    enc_drive_t enc_drive[3]; /* per-encoder accel state                    */
     int     select_held;
     int     select_was_combo;
 
@@ -161,7 +178,7 @@ static void send_crone_ready(void) {
 static void pump_screen(norns_state_t *s);
 static void render_frame(norns_state_t *s);
 static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev);
-static void poll_axes(norns_state_t *s);
+static void poll_encoders(norns_state_t *s);
 
 /* Run the display loop for `ms` milliseconds — keeps the screen live
  * during startup waits so the norns splash animation is visible while
@@ -177,7 +194,7 @@ static void pump_for_ms(norns_state_t *s, int ms) {
             if (ev.type == SDL_CONTROLLERDEVICEADDED && !s->gc)
                 s->gc = SDL_GameControllerOpen(ev.cdevice.which);
         }
-        poll_axes(s);
+        poll_encoders(s);
         pump_screen(s);
         render_frame(s);
         SDL_Delay(16);  /* ~60fps during wait */
@@ -280,17 +297,29 @@ static void start_norns_processes(norns_state_t *s) {
     send_crone_ready();
     pump_for_ms(s, 1000);
 
-    /* 5. norns-input-bridge (JACK MIDI → input FIFO for external devices) */
-    { char *av[] = { bridge_path, FIFO_INPUT, FIFO_MIDI_IN, NULL };
-      s->pid_input_bridge = spawn_proc(bridge_path, av); }
-    log_msg("norns-input-bridge started");
+    /* 5/6. External-device bridge.
+     * Handheld variant ($NORNS_USE_MONOME=1): a real monome-protocol grid is
+     * driven over its serial port by norns-monome-bridge, which OWNS the grid
+     * FIFO — so the Push 2 input-bridge/display must NOT also run (two readers
+     * would corrupt grid frames). Otherwise (Move): Push 2 bridge + display. */
+    const char *use_monome = getenv("NORNS_USE_MONOME");
+    if (use_monome && use_monome[0] == '1') {
+        char mb_path[512];
+        snprintf(mb_path, sizeof(mb_path), "%s/norns-monome-bridge", s->bin_dir);
+        char *av[] = { mb_path, NULL };   /* auto-detects the grid; FIFOs via env */
+        s->pid_input_bridge = spawn_proc(mb_path, av);
+        log_msg("norns-monome-bridge started");
+    } else {
+        { char *av[] = { bridge_path, FIFO_INPUT, FIFO_MIDI_IN, NULL };
+          s->pid_input_bridge = spawn_proc(bridge_path, av); }
+        log_msg("norns-input-bridge started");
 
-    /* 6. norns-push2-display (draws norns screen to Push 2 at 30fps if present) */
-    { char p2_path[512];
-      snprintf(p2_path, sizeof(p2_path), "%s/norns-push2-display", s->bin_dir);
-      char *av[] = { p2_path, FIFO_SCREEN_P2, NULL };
-      s->pid_push2_display = spawn_proc(p2_path, av); }
-    log_msg("norns-push2-display started");
+        { char p2_path[512];
+          snprintf(p2_path, sizeof(p2_path), "%s/norns-push2-display", s->bin_dir);
+          char *av[] = { p2_path, FIFO_SCREEN_P2, NULL };
+          s->pid_push2_display = spawn_proc(p2_path, av); }
+        log_msg("norns-push2-display started");
+    }
 
     /* 7. maiden (web IDE on port 5000) */
     { char *av[] = { maiden_path, "server",
@@ -395,41 +424,116 @@ static void render_frame(norns_state_t *s) {
 
 /* ── Gamepad input ──────────────────────────────────────── */
 
+/* Map an SDL face/shoulder button to our config bit, or 0 if it isn't a
+ * key-bindable button (D-pad and system buttons are handled separately). */
+static uint8_t sdl_btn_bit(Uint8 button) {
+    switch (button) {
+    case SDL_CONTROLLER_BUTTON_A:             return BTN_A;
+    case SDL_CONTROLLER_BUTTON_B:             return BTN_B;
+    case SDL_CONTROLLER_BUTTON_X:             return BTN_X;
+    case SDL_CONTROLLER_BUTTON_Y:             return BTN_Y;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return BTN_L1;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return BTN_R1;
+    default:                                  return 0;
+    }
+}
+
+/* Held button-pair tracking. handle_button only updates these bitmasks (and emits
+ * the immediate tap detent, so a quick press isn't missed by the per-frame poll);
+ * poll_encoders turns held directions into accelerating encoder motion. */
+#define DPADBIT_UP    0x1
+#define DPADBIT_DOWN  0x2
+#define DPADBIT_LEFT  0x4
+#define DPADBIT_RIGHT 0x8
+#define SHBIT_L1      0x1
+#define SHBIT_R1      0x2
+#define TRIGGER_THRESH 8192   /* L2/R2 analog-trigger press threshold (0..32767) */
+
+/* Held direction of each button-pair: +1 / -1 / 0 (right/up/R = +). */
+static int dpad_dir_x(uint8_t b)     { return (b & DPADBIT_RIGHT) ? 1 : (b & DPADBIT_LEFT) ? -1 : 0; }
+static int dpad_dir_y(uint8_t b)     { return (b & DPADBIT_UP)    ? 1 : (b & DPADBIT_DOWN) ? -1 : 0; }
+static int shoulder_dir(uint8_t b)   { return (b & SHBIT_R1)      ? 1 : (b & SHBIT_L1)     ? -1 : 0; }
+
+/* Emit one detent for a button-pair press on the EVENT, so a quick tap is never
+ * missed by the per-frame poll. poll_encoders adds the hold-acceleration. */
+static void enc_tap(norns_state_t *s, int e, int sign) {
+    if (e >= 0) send_enc(s, (uint8_t)e, (int16_t)(sign * s->controls.dpad_step));
+}
+
+/* Resolve the active mapping for the current context: built-in defaults, then
+ * the global config + the selected [scheme], then the context overlay — [menu]
+ * when in the menu, or [script:NAME] for the running script. The overlay only
+ * needs to list what differs. */
+static void resolve_controls(norns_state_t *s) {
+    controls_defaults(&s->controls);
+    if (!s->cfg_text) return;
+    controls_parse_scheme(&s->controls, s->cfg_text,
+                          s->cfg_scheme[0] ? s->cfg_scheme : NULL);
+    if (s->context[0]) {
+        char sec[80];
+        if (strcmp(s->context, "menu") == 0) snprintf(sec, sizeof(sec), "menu");
+        else snprintf(sec, sizeof(sec), "script:%s", s->context);
+        controls__canon(sec);   /* match the canonicalised section header */
+        controls_parse_scheme(&s->controls, s->cfg_text, sec);
+    }
+}
+
+/* norns' context ("menu" or the script name) is written on each transition by
+ * the patched menu.lua. Poll it cheaply (~every 6 frames); on change, re-resolve
+ * the mapping so per-context overlays take effect. */
+#define CONTEXT_FILE "/tmp/norns-context"
+static void poll_context(norns_state_t *s) {
+    if (s->frame % 6 != 0) return;
+    int fd = open(CONTEXT_FILE, O_RDONLY);
+    if (fd < 0) return;
+    char buf[64] = {0};
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return;
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' ')) buf[--n] = '\0';
+    if (strcmp(buf, s->context) != 0) {
+        snprintf(s->context, sizeof(s->context), "%s", buf);
+        resolve_controls(s);
+        fprintf(stderr, "[norns-panicos] context: %s\n", s->context);
+    }
+}
+
+/* +1 normally; -1 flips D-pad up/down when the active config asks (the menu and
+ * any opted-in script set dpad_y_invert). */
+static int dpad_y_flip(const norns_state_t *s) {
+    return s->controls.dpad_y_invert ? -1 : 1;
+}
+
 static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     if (!s->gc) return;
     int pressed = (ev->type == SDL_CONTROLLERBUTTONDOWN);
+    uint8_t bit = sdl_btn_bit(ev->button);
+
+    /* L1/R1 as an encoder pair take precedence over any key binding on them. */
+    if ((bit == BTN_L1 || bit == BTN_R1) && s->controls.shoulder_enc >= 0) {
+        int sign = (bit == BTN_R1) ? 1 : -1;
+        if (pressed) { s->shoulder_btn |= (bit == BTN_R1 ? SHBIT_R1 : SHBIT_L1);
+                       enc_tap(s, s->controls.shoulder_enc, sign); }
+        else           s->shoulder_btn &= ~(bit == BTN_R1 ? SHBIT_R1 : SHBIT_L1);
+        return;
+    }
+
+    /* Face/shoulder buttons → norns keys (every key bound to this button fires). */
+    if (bit) {
+        for (int k = 0; k < 3; k++)
+            if (s->controls.key_btn[k] & bit) send_key(s, (uint8_t)k, (uint8_t)pressed);
+        return;
+    }
 
     switch (ev->button) {
-    /* Face buttons → norns keys (Y=K1, X=K2, A=K3, B=K1 alias) */
-    case SDL_CONTROLLER_BUTTON_Y:
-        send_key(s, 0, pressed); break;
-    case SDL_CONTROLLER_BUTTON_B:
-        send_key(s, 0, pressed); break;
-    case SDL_CONTROLLER_BUTTON_X:
-        send_key(s, 1, pressed); break;
-    case SDL_CONTROLLER_BUTTON_A:
-        send_key(s, 2, pressed); break;
+    /* D-pad: emit the tap detent now (never missed), and track the held
+     * direction so poll_encoders can add hold-acceleration. */
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:    if (pressed) { s->dpad_btn |= DPADBIT_UP;    enc_tap(s, s->controls.dpad_enc[1],  dpad_y_flip(s)); } else s->dpad_btn &= ~DPADBIT_UP;    break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  if (pressed) { s->dpad_btn |= DPADBIT_DOWN;  enc_tap(s, s->controls.dpad_enc[1], -dpad_y_flip(s)); } else s->dpad_btn &= ~DPADBIT_DOWN;  break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  if (pressed) { s->dpad_btn |= DPADBIT_LEFT;  enc_tap(s, s->controls.dpad_enc[0], -1); } else s->dpad_btn &= ~DPADBIT_LEFT;  break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: if (pressed) { s->dpad_btn |= DPADBIT_RIGHT; enc_tap(s, s->controls.dpad_enc[0],  1); } else s->dpad_btn &= ~DPADBIT_RIGHT; break;
 
-    /* D-pad left/right → selected encoder ±2.
-     * Delta 2 maps to one norns UI detent: the patched matron encoder
-     * accumulator counts quadrature pulse-pairs (2 pulses per detent),
-     * so delta 1 is sub-threshold and delta 2 fires exactly one enc() call. */
-    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-        if (pressed) send_enc(s, s->selected_enc, -2);
-        break;
-    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-        if (pressed) send_enc(s, s->selected_enc,  2);
-        break;
-
-    /* D-pad up/down → E1 always (quick menu scroll regardless of selection) */
-    case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        if (pressed) send_enc(s, 0,  2);
-        break;
-    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        if (pressed) send_enc(s, 0, -2);
-        break;
-
-    /* Select = restart; Select+Start = exit */
+    /* Select = restart; Select+Start = exit (hardcoded so they can't be unbound) */
     case SDL_CONTROLLER_BUTTON_BACK:
         if (pressed) {
             s->select_held = 1;
@@ -454,34 +558,86 @@ static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     }
 }
 
-/* Poll axes each frame: shoulder buttons select encoder, stick drives it. */
-static void poll_axes(norns_state_t *s) {
-    if (!s->gc) return;
+/* SDL axis for the stick driving encoder e. */
+static SDL_GameControllerAxis stick_axis_for_enc(const controls_t *c, int e) {
+    int left = controls_enc_is_left_stick(c, e);
+    int y    = controls_enc_reads_y(c, e);   /* Y or inverted-Y both read the Y axis */
+    if (left) return y ? SDL_CONTROLLER_AXIS_LEFTY  : SDL_CONTROLLER_AXIS_LEFTX;
+    else      return y ? SDL_CONTROLLER_AXIS_RIGHTY : SDL_CONTROLLER_AXIS_RIGHTX;
+}
 
-    /* Encoder selection: L1=E1, L2=E2, R1=E3.
-     * L1/R1 are buttons; L2/R2 are analog triggers (axis).
-     * When no shoulder is held, selected_enc retains its last value. */
-    int     l1 = SDL_GameControllerGetButton(s->gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
-    int     r1 = SDL_GameControllerGetButton(s->gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-    int16_t l2 = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-    if      (l1)                   s->selected_enc = 0;
-    else if (l2 > TRIGGER_THRESH)  s->selected_enc = 1;
-    else if (r1)                   s->selected_enc = 2;
-    /* R2 unassigned */
+/* Unified per-encoder drive, evaluated every frame. Each encoder is driven by a
+ * button-pair (D-pad axis, L1/R1, or L2/R2) and/or an analog stick, all feeding
+ * one acceleration model: hold longer → spin faster. Button-pairs share the
+ * D-pad's (snappier) accel curve and emit their first detent on the button event
+ * (handle_button) so quick taps never miss; sticks and the L2/R2 triggers emit
+ * their first detent here and use the gentler stick accel curve. A button-pair
+ * targeting an encoder takes precedence over a stick on the same encoder. */
+static void poll_encoders(norns_state_t *s) {
+    const controls_t *c = &s->controls;
+    poll_context(s);
 
-    /* Left stick X → selected encoder (velocity-scaled, throttled to STICK_THROTTLE).
-     * SDL2 axis convention: right = positive, left = negative.
-     * Right stick = increment (positive delta), left = decrement (negative delta). */
-    if (s->frame % STICK_THROTTLE == 0) {
-        int16_t lx = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_LEFTX);
-        if (abs(lx) > STICK_DEADZONE) {
-            int16_t delta;
-            int a = abs(lx);
-            if      (a < 16384) delta = 1;
-            else if (a < 24576) delta = 2;
-            else                delta = 3;
-            if (lx < 0) delta = (int16_t)(-delta);  /* left = negative delta */
-            send_enc(s, s->selected_enc, delta);
+    /* Resolve every button-pair to a per-encoder held direction. pair_event[e]=1
+     * means the tap was already emitted on the event (D-pad / shoulders). */
+    int pair_dir[3]   = { 0, 0, 0 };
+    int pair_event[3] = { 0, 0, 0 };
+    int dx = dpad_dir_x(s->dpad_btn);
+    int dy = dpad_dir_y(s->dpad_btn) * dpad_y_flip(s);  /* flipped in the menu */
+    if (c->dpad_enc[0] >= 0 && dx) { pair_dir[c->dpad_enc[0]] = dx; pair_event[c->dpad_enc[0]] = 1; }
+    if (c->dpad_enc[1] >= 0 && dy && !pair_dir[c->dpad_enc[1]]) { pair_dir[c->dpad_enc[1]] = dy; pair_event[c->dpad_enc[1]] = 1; }
+    int sh = shoulder_dir(s->shoulder_btn);
+    if (c->shoulder_enc >= 0 && sh && !pair_dir[c->shoulder_enc]) { pair_dir[c->shoulder_enc] = sh; pair_event[c->shoulder_enc] = 1; }
+    if (c->trigger_enc >= 0 && !pair_dir[c->trigger_enc] && s->gc) {
+        int l2 = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        int r2 = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+        int tg = (r2 > TRIGGER_THRESH) ? 1 : (l2 > TRIGGER_THRESH) ? -1 : 0;
+        if (tg) pair_dir[c->trigger_enc] = tg;   /* poll-tapped (analog axis) */
+    }
+
+    for (int e = 0; e < 3; e++) {
+        int   dir   = 0;
+        float base  = 0.0f;   /* detents/frame at the un-accelerated rate */
+        int   delay = c->stick_accel_delay, ramp = c->stick_accel_ramp;
+        int   from_event = 0;
+
+        if (pair_dir[e] != 0) {                 /* a button-pair drives this encoder */
+            dir = pair_dir[e];
+            base = ENC_DPAD_BASE_RATE;
+            delay = c->accel_delay; ramp = c->accel_ramp;
+            from_event = pair_event[e];
+        } else if (controls_enc_is_stick(c, e) && s->gc) {
+            int m;
+            if (controls_enc_is_stick_xy(c, e)) {
+                /* Sum both axes independently (no angle): up OR right = +. */
+                int left = controls_enc_is_left_stick(c, e);
+                int vx = SDL_GameControllerGetAxis(s->gc,
+                    left ? SDL_CONTROLLER_AXIS_LEFTX : SDL_CONTROLLER_AXIS_RIGHTX);
+                int vy = -SDL_GameControllerGetAxis(s->gc,
+                    left ? SDL_CONTROLLER_AXIS_LEFTY : SDL_CONTROLLER_AXIS_RIGHTY);
+                m = controls_stick_delta(c, vx) + controls_stick_delta(c, vy);
+            } else {
+                int v = SDL_GameControllerGetAxis(s->gc, stick_axis_for_enc(c, e));
+                if (controls_enc_is_stick_y(c, e)) v = -v;  /* push up = increment */
+                m = controls_stick_delta(c, v);              /* -2..2, deadzone-aware */
+            }
+            dir  = (m > 0) - (m < 0);
+            base = (float)(m < 0 ? -m : m) / (float)c->stick_throttle;
+        }
+
+        enc_drive_t *d = &s->enc_drive[e];
+        if (dir == 0) { d->dir = 0; d->held_frames = 0; d->phase = 0.0f; continue; }
+        if (dir != d->dir) {                 /* new press / direction reversal */
+            d->dir = (int8_t)dir; d->held_frames = 0; d->phase = 0.0f;
+            if (!from_event)   /* sticks + L2/R2 triggers emit their first detent here */
+                send_enc(s, (uint8_t)e, (int16_t)(dir * c->dpad_step));
+            continue;
+        }
+        d->held_frames++;
+        d->phase += base * controls_accel_factor(c, d->held_frames, delay, ramp);
+        int steps = (int)d->phase;
+        if (steps > 0) {
+            d->phase -= (float)steps;
+            send_enc(s, (uint8_t)e, (int16_t)(dir * steps * c->dpad_step));
         }
     }
 }
@@ -551,6 +707,33 @@ static int init_sdl(norns_state_t *s) {
     return 0;
 }
 
+/* Debug: when /tmp/norns-input-debug exists, log raw SDL input events so we can
+ * see exactly what a control (e.g. the D-pad) emits — controller button, axis,
+ * or underlying joystick hat/button. Cheap: gated, and most events are sparse. */
+static void debug_log_event(const SDL_Event *ev) {
+    static int dbg = -1;
+    if (dbg < 0) dbg = (access("/tmp/norns-input-debug", F_OK) == 0) ? 1 : 0;
+    if (!dbg) return;
+    switch (ev->type) {
+    case SDL_CONTROLLERBUTTONDOWN:
+    case SDL_CONTROLLERBUTTONUP:
+        fprintf(stderr, "[indbg] cbutton=%d %s\n", ev->cbutton.button,
+                ev->type == SDL_CONTROLLERBUTTONDOWN ? "down" : "up"); break;
+    case SDL_CONTROLLERAXISMOTION:
+        if (abs(ev->caxis.value) > 8000)
+            fprintf(stderr, "[indbg] caxis=%d val=%d\n", ev->caxis.axis, ev->caxis.value);
+        break;
+    case SDL_JOYHATMOTION:
+        fprintf(stderr, "[indbg] jhat=%d val=%d\n", ev->jhat.hat, ev->jhat.value); break;
+    case SDL_JOYBUTTONDOWN:
+        fprintf(stderr, "[indbg] jbutton=%d\n", ev->jbutton.button); break;
+    case SDL_JOYAXISMOTION:
+        if (abs(ev->jaxis.value) > 12000)
+            fprintf(stderr, "[indbg] jaxis=%d val=%d\n", ev->jaxis.axis, ev->jaxis.value);
+        break;
+    }
+}
+
 /* ── Main ───────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -565,7 +748,6 @@ int main(int argc, char *argv[]) {
     s.sclang_stdin_wr = -1;
     s.pid_jackd = s.pid_crone = s.pid_matron = s.pid_sclang = -1;
     s.pid_input_bridge = s.pid_maiden = s.pid_push2_display = -1;
-    s.selected_enc = 0;
     s.running = 1;
     s.frame   = 0;
 
@@ -573,6 +755,37 @@ int main(int argc, char *argv[]) {
     {
         char msg[512];
         snprintf(msg, sizeof(msg), "norns_dir=%s  bin_dir=%s", s.norns_dir, s.bin_dir);
+        log_msg(msg);
+    }
+
+    /* Control mapping: read the config text once and keep it, so the active
+     * mapping can be re-resolved per context (menu / per-script overlays) at
+     * runtime. The `scheme = <name>` line picks the base layout. */
+    {
+        const char *cfg = getenv("NORNS_PANICOS_CONF");
+        char fallback[600];
+        if (!cfg || !*cfg) {
+            const char *home = getenv("HOME");
+            snprintf(fallback, sizeof(fallback), "%s/controls.conf", home ? home : "/tmp");
+            cfg = fallback;
+        }
+        FILE *f = fopen(cfg, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz > 0 && sz < 65536 && (s.cfg_text = malloc((size_t)sz + 1))) {
+                size_t rd = fread(s.cfg_text, 1, (size_t)sz, f);
+                s.cfg_text[rd] = '\0';
+                controls_find_scheme(s.cfg_text, s.cfg_scheme, sizeof(s.cfg_scheme));
+            }
+            fclose(f);
+        }
+        resolve_controls(&s);   /* base mapping; context overlays applied at runtime */
+        char msg[800];
+        snprintf(msg, sizeof(msg), "controls: %s (scheme: %s)",
+                 s.cfg_text ? cfg : "built-in defaults",
+                 s.cfg_scheme[0] ? s.cfg_scheme : "default");
         log_msg(msg);
     }
 
@@ -584,6 +797,7 @@ int main(int argc, char *argv[]) {
     SDL_Event ev;
     while (s.running) {
         while (SDL_PollEvent(&ev)) {
+            debug_log_event(&ev);
             if (ev.type == SDL_QUIT) {
                 s.running = 0; break;
             }
@@ -601,7 +815,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        poll_axes(&s);
+        poll_encoders(&s);
         pump_screen(&s);
         render_frame(&s);
 

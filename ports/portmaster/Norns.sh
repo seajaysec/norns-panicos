@@ -34,6 +34,90 @@ fi
 echo "$LAUNCH_COUNT" > "$LAUNCH_COUNT_FILE"
 mkdir -p "$GAMEDIR/logs" "$GAMEDIR/cfg"
 
+# Control mapping config. norns-panicos reads $NORNS_PANICOS_CONF at launch;
+# seed a commented default the user can edit. The binary's built-in defaults
+# already match this template, so behaviour is identical if seeding is skipped.
+export NORNS_PANICOS_CONF="$GAMEDIR/cfg/controls.conf"
+if [ ! -f "$NORNS_PANICOS_CONF" ]; then
+    cat > "$NORNS_PANICOS_CONF" << 'CTRLCONF'
+# norns-panicos controls — edit and relaunch to remap.
+#
+# Pick a layout by name. Switch this one line to roll between schemes; add your
+# own [section] below and point `scheme` at it.
+scheme = sticks
+
+# ── Global settings (apply to every scheme) ────────────────────────────────
+# Keys (K1/K2/K3). Buttons: a b x y l1 r1 (comma-separated, multiple allowed).
+k1 = y
+k2 = x
+k3 = a
+dpad_step      = 2      # encoder delta per detent (2 = one patched-matron detent)
+stick_deadzone = 8192   # 0..32000; raise if a stick drifts at rest
+stick_throttle = 6      # base stick rate: emit ~every N frames (raise to slow)
+stick_invert   = 0      # 1 = flip every stick direction
+# Hold-to-accelerate: encoders spin faster the longer an input is held.
+# Button-pairs (D-pad/L1-R1/L2-R2) use accel_*; sticks use the gentler stick_accel_*.
+accel             = 1   # 0 = constant rate
+accel_delay       = 18  # button-pair: frames before ramping (~0.3s)
+accel_ramp        = 60  # button-pair: frames to reach top speed (~1s)
+stick_accel_delay = 30  # sticks: start later (~0.5s)
+stick_accel_ramp  = 110 # sticks: smoother, longer ramp
+accel_max         = 5   # peak speed multiplier
+
+# ── Schemes ────────────────────────────────────────────────────────────────
+# Each encoder is driven by an analog source AND/OR button-pairs:
+#   e1/e2/e3   = none | lstick | lstick-y | rstick | rstick-y   (stick source)
+#   dpad_x     = 1|2|3|none   D-pad left/right → that encoder
+#   dpad_y     = 1|2|3|none   D-pad up/down    → that encoder
+#   shoulders  = 1|2|3|none   L1/R1 pair       → that encoder
+#   triggers   = 1|2|3|none   L2/R2 pair       → that encoder
+
+# Default: dual-stick devices (RG35XX Pro / H).
+# E1 = D-pad L/R + L1/R1;  E2 = D-pad U/D + left stick;  E3 = L2/R2 + right stick.
+[sticks]
+e1 = none
+e2 = lstick
+e3 = rstick
+dpad_x    = 1
+dpad_y    = 2
+shoulders = 1
+triggers  = 3
+
+# D-pad only (works without analog sticks, e.g. RG36XX):
+#   up/down = E1, left/right = E2, L1/R1 = E3.
+[dpad]
+dpad_x    = 2
+dpad_y    = 1
+shoulders = 3
+triggers  = none
+
+# ── Context overlays ───────────────────────────────────────────────────────
+# Applied ON TOP of the active scheme while you're in that context. [menu] =
+# the norns system menu; [script:NAME] = while the script NAME is running
+# (NAME = its folder/short name). List only what differs from the scheme.
+#
+# In the menu the list scrolls "down = +", opposite to D-pad up — so flip the
+# D-pad up/down there (up = up), and let B mirror K2 for one-handed paging.
+[menu]
+k2            = x, b
+dpad_y_invert = 1
+
+# Example per-script override: koiboi2 wants its D-pad up/down inverted.
+[script:koiboi2]
+dpad_y_invert = 1
+
+# pixels: right stick steers E2 (L/R) + E3 (U/D, inverted to taste); left stick
+# drives E1 with both axes summed (push up OR right = +, down OR left = −).
+# D-pad/shoulders unchanged.
+[script:pixels]
+e1 = lstick-xy
+e2 = rstick
+e3 = rstick-y-inv
+
+# Note: Select = restart norns, Select+Start = quit. These are fixed.
+CTRLCONF
+fi
+
 # Generate sclang_conf.yaml with absolute paths for this device.
 # Also auto-detect double-nested system extension dirs (OS packaging bug where
 # each plugin ships both a top-level .sc file AND a Name/Name/Classes/ tree),
@@ -56,8 +140,18 @@ postInlinePaths: []
 EOF
 unset EXCL _d _n
 
+# Use the real monome grid (over its serial port) rather than the Push 2 emulated
+# grid. Toggled by the Grid-On / Grid-Off Tools, which set/clear this flag;
+# default on (the bridge no-ops harmlessly when no grid is attached).
+if [ -f /storage/.norns-grid-disabled ]; then
+    export NORNS_USE_MONOME=0
+else
+    export NORNS_USE_MONOME=1
+fi
+
 # FAT32 does not preserve execute bits — chmod every norns binary after extraction
-chmod +x ./bin/norns-panicos ./bin/norns-input-bridge ./bin/norns-push2-display 2>/dev/null
+chmod +x ./bin/norns-panicos ./bin/norns-input-bridge ./bin/norns-push2-display \
+         ./bin/norns-monome-bridge 2>/dev/null
 find "$HOME/norns/build" -type f -exec chmod +x {} \; 2>/dev/null || true
 chmod +x "$HOME/maiden/maiden" 2>/dev/null || true
 
@@ -91,7 +185,12 @@ unset _g
 _wp="/usr/share/wireplumber/wireplumber.conf.d/95-norns-codec-lowlatency.conf"
 _pw="/etc/pipewire/pipewire.conf.d/51-norns-lowlatency.conf"
 _ll_new=0
-if [ ! -f "$_wp" ]; then
+# Rewrite when absent OR when it predates the audio.rate pin (self-heals old
+# installs). The built-in H616 codec is left at 44.1k by other apps; norns runs
+# at 48k, so without pinning the codec's rate PipeWire resamples 48k→44.1k into
+# a busy device and norns audio crackles. Pin the codec to 48000 to match the
+# graph + HDMI path (all already 48k); 44.1k sources resample to it transparently.
+if [ ! -f "$_wp" ] || ! grep -q "audio.rate" "$_wp" 2>/dev/null; then
     mkdir -p "$(dirname "$_wp")" 2>/dev/null
     cat > "$_wp" 2>/dev/null <<'WPCONF'
 monitor.alsa.rules = [
@@ -101,6 +200,7 @@ monitor.alsa.rules = [
     ]
     actions = {
       update-props = {
+        audio.rate           = 48000
         api.alsa.period-size = 128
         api.alsa.headroom    = 128
       }
@@ -122,11 +222,25 @@ PWCONF
     [ -s "$_pw" ] && _ll_new=1
 fi
 if [ "$_ll_new" = 1 ]; then
-    killall wireplumber pipewire pipewire-pulse 2>/dev/null
+    # Apply the new low-latency / codec-rate config by restarting the audio
+    # stack. PanicOS runs PipeWire as *system-wide* systemd services, where a
+    # bare `killall wireplumber` does NOT reliably respawn it — restart through
+    # systemd instead (fall back to killall on non-systemd setups).
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl restart pipewire pipewire-pulse wireplumber 2>/dev/null
+    else
+        killall wireplumber pipewire pipewire-pulse 2>/dev/null
+    fi
     for _i in $(seq 1 15); do
         pgrep -x pipewire >/dev/null 2>&1 && pgrep -x wireplumber >/dev/null 2>&1 && break
         sleep 1
     done
+    # Restarting the stack resets default-sink routing — the speaker goes silent
+    # until something re-elects a sink. Re-run PanicOS's own selector (picks the
+    # speaker when no HDMI is attached); this is what makes the codec-rate fix
+    # safe to apply at launch instead of only after a reboot.
+    sleep 1
+    command -v hdmi_sense >/dev/null 2>&1 && hdmi_sense >/dev/null 2>&1 || true
 fi
 unset _wp _pw _ll_new _i
 
