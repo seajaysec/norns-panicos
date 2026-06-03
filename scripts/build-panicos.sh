@@ -71,6 +71,8 @@ USB_FLAGS=$(pkg-config --cflags --libs libusb-1.0 2>/dev/null || echo "-lusb-1.0
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-panicos.c       -o build/norns-panicos       $SDL_FLAGS -lpthread -lm
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c  -o build/norns-input-bridge  $JACK_FLAGS $USB_FLAGS -lpthread
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-push2-display.c -o build/norns-push2-display $USB_FLAGS
+# norns-monome-bridge: real monome grid over its serial port (mext; no extra deps).
+${CROSS_PREFIX}gcc -O2 -Wall src/norns-monome-bridge.c -o build/norns-monome-bridge
 echo "[1/4] host binaries OK"
 '
 
@@ -120,8 +122,9 @@ mkdir -p \
 cp "$REPO_ROOT/build/norns-panicos"        "$NORNS_BIN/"
 cp "$REPO_ROOT/build/norns-input-bridge"  "$NORNS_BIN/"
 cp "$REPO_ROOT/build/norns-push2-display" "$NORNS_BIN/"
+cp "$REPO_ROOT/build/norns-monome-bridge" "$NORNS_BIN/"
 chmod +x "$NORNS_BIN/norns-panicos" "$NORNS_BIN/norns-input-bridge" \
-         "$NORNS_BIN/norns-push2-display"
+         "$NORNS_BIN/norns-push2-display" "$NORNS_BIN/norns-monome-bridge"
 
 # norns prebuilt binaries
 tar xzf "$REPO_ROOT/dist/norns-move-prebuilt.tar.gz" -C "$NORNS_DATA/"
@@ -141,6 +144,27 @@ if ! grep -qa "continuing without audio input" "$_crone"; then
     exit 1
 fi
 echo "  crone ADC-optional patch: present"
+
+# Encoder feel for D-pad/stick input (no real rotary encoders here): the norns
+# menu desensitises E1 (sens 8) and time-accelerates E3, which makes discrete
+# D-pad presses need 4 taps per move and gives E3 a different feel. Normalise to
+# sens 2 / accel off on all three so they respond uniformly to norns-panicos's
+# own hold-acceleration. Idempotent.
+_menu="$NORNS_DATA/norns/lua/core/menu.lua"
+if [ -f "$_menu" ]; then
+    sed -i 's/set_sens(1,8)/set_sens(1,2)/; s/set_accel(3,true)/set_accel(3,false)/' "$_menu"
+    echo "  menu encoder sens normalised (E1 sens 2, E3 accel off)"
+    # Export the norns context ("menu" or the running script name) so the host
+    # can apply per-context control overlays ([menu] / [script:NAME]). Idempotent.
+    grep -q "norns-context" "$_menu" || sed -i \
+        's|_menu.set_mode = function(mode)|_menu.set_mode = function(mode) do local f=io.open("/tmp/norns-context","w") if f then f:write(mode and "menu" or (norns.state.shortname or "")) f:close() end end|' \
+        "$_menu"
+    echo "  norns context exported to /tmp/norns-context"
+fi
+
+mkdir -p "$NORNS_DATA/norns/lua/lib"
+cp "$REPO_ROOT/lua/pad.lua" "$NORNS_DATA/norns/lua/lib/pad.lua"
+echo "  Installed pad.lua (native gamepad wrapper) into norns lua/lib"
 
 
 # Starter scripts (cloned from source)

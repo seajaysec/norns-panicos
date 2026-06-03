@@ -1,0 +1,60 @@
+name: build-panicos
+
+# Offloaded from-source build of the norns-panicos PortMaster package, including
+# the native-HID matron patch. Runs on a NATIVE arm64 runner (free for public
+# repos) so the matron/crone build is native — no QEMU, ~20-40 min instead of
+# 60-80. Trigger manually (Actions → build-panicos → Run workflow) or by pushing
+# build-relevant files to the feature branch. Download the artifact when green.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/handheld-controls-grid-audio]
+    paths:
+      - 'src/**'
+      - 'patches/**'
+      - 'scripts/**'
+      - 'lua/**'
+      - 'ports/**'
+      - '.github/workflows/**'
+
+# A new push cancels an in-flight build so we don't stack long jobs.
+concurrency:
+  group: build-panicos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm        # native arm64 — no QEMU
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner arch (sanity)
+        run: uname -m && docker --version
+
+      - name: Build PortMaster package (from source, native arm64)
+        env:
+          BUILD_FROM_SOURCE: '1'
+        run: ./scripts/build-panicos.sh
+
+      - name: Upload PortMaster package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: norns-panicos-package
+          path: |
+            dist/norns-panicos.zip
+            dist/norns-move-prebuilt.tar.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload host binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: norns-panicos-host-binaries
+          path: build/norns-panicos
+          if-no-files-found: warn
+          retention-days: 14
