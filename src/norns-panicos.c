@@ -558,21 +558,35 @@ static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     }
 }
 
-/* SDL axis for the stick driving encoder e. */
-static SDL_GameControllerAxis stick_axis_for_enc(const controls_t *c, int e) {
-    int left = controls_enc_is_left_stick(c, e);
-    int y    = controls_enc_reads_y(c, e);   /* Y or inverted-Y both read the Y axis */
-    if (left) return y ? SDL_CONTROLLER_AXIS_LEFTY  : SDL_CONTROLLER_AXIS_LEFTX;
-    else      return y ? SDL_CONTROLLER_AXIS_RIGHTY : SDL_CONTROLLER_AXIS_RIGHTX;
+/* Combined deadzone-aware delta of every stick axis routed to encoder e (axes on
+ * the same encoder sum, so both axes of one stick drive it together). */
+static int stick_delta_for_enc(norns_state_t *s, const controls_t *c, int e) {
+    if (!s->gc) return 0;
+    int m = 0;
+    if (c->lstick_enc[0] == e)
+        m += controls_stick_delta(c, SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_LEFTX));
+    if (c->lstick_enc[1] == e) {
+        int v = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_LEFTY);
+        v = c->lstick_y_invert ? v : -v;            /* default: push up = increment */
+        m += controls_stick_delta(c, v);
+    }
+    if (c->rstick_enc[0] == e)
+        m += controls_stick_delta(c, SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_RIGHTX));
+    if (c->rstick_enc[1] == e) {
+        int v = SDL_GameControllerGetAxis(s->gc, SDL_CONTROLLER_AXIS_RIGHTY);
+        v = c->rstick_y_invert ? v : -v;
+        m += controls_stick_delta(c, v);
+    }
+    return m;
 }
 
 /* Unified per-encoder drive, evaluated every frame. Each encoder is driven by a
- * button-pair (D-pad axis, L1/R1, or L2/R2) and/or an analog stick, all feeding
- * one acceleration model: hold longer → spin faster. Button-pairs share the
- * D-pad's (snappier) accel curve and emit their first detent on the button event
- * (handle_button) so quick taps never miss; sticks and the L2/R2 triggers emit
- * their first detent here and use the gentler stick accel curve. A button-pair
- * targeting an encoder takes precedence over a stick on the same encoder. */
+ * button-pair (D-pad axis, L1/R1, or L2/R2) and/or one or more stick axes, all
+ * feeding one acceleration model: hold longer → spin faster. Button-pairs share
+ * the D-pad's (snappier) accel curve and emit their first detent on the button
+ * event (handle_button) so quick taps never miss; sticks and the L2/R2 triggers
+ * emit their first detent here and use the gentler stick accel curve. A
+ * button-pair targeting an encoder takes precedence over a stick on it. */
 static void poll_encoders(norns_state_t *s) {
     const controls_t *c = &s->controls;
     poll_context(s);
@@ -605,21 +619,8 @@ static void poll_encoders(norns_state_t *s) {
             base = ENC_DPAD_BASE_RATE;
             delay = c->accel_delay; ramp = c->accel_ramp;
             from_event = pair_event[e];
-        } else if (controls_enc_is_stick(c, e) && s->gc) {
-            int m;
-            if (controls_enc_is_stick_xy(c, e)) {
-                /* Sum both axes independently (no angle): up OR right = +. */
-                int left = controls_enc_is_left_stick(c, e);
-                int vx = SDL_GameControllerGetAxis(s->gc,
-                    left ? SDL_CONTROLLER_AXIS_LEFTX : SDL_CONTROLLER_AXIS_RIGHTX);
-                int vy = -SDL_GameControllerGetAxis(s->gc,
-                    left ? SDL_CONTROLLER_AXIS_LEFTY : SDL_CONTROLLER_AXIS_RIGHTY);
-                m = controls_stick_delta(c, vx) + controls_stick_delta(c, vy);
-            } else {
-                int v = SDL_GameControllerGetAxis(s->gc, stick_axis_for_enc(c, e));
-                if (controls_enc_is_stick_y(c, e)) v = -v;  /* push up = increment */
-                m = controls_stick_delta(c, v);              /* -2..2, deadzone-aware */
-            }
+        } else {                                /* analog stick axes routed to e */
+            int m = stick_delta_for_enc(s, c, e);
             dir  = (m > 0) - (m < 0);
             base = (float)(m < 0 ? -m : m) / (float)c->stick_throttle;
         }

@@ -1,0 +1,14 @@
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = maiden-mockup.local
+[v3]
+subjectAltName = @alt
+basicConstraints = CA:FALSE
+[alt]
+DNS.1 = farrputer.local
+DNS.2 = localhost
+IP.1 = 192.168.68.55
+IP.2 = 127.0.0.1

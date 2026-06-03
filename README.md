@@ -22,6 +22,9 @@ Mapping is fully configurable in `<port>/norns/cfg/controls.conf` (no rebuild) �
   active scheme, applied the instant you enter that context. The menu flips the
   D-pad to match its scroll direction and lets B page like K2; per-script blocks
   remap anything for one script (e.g. `[script:pixels]` puts both sticks to work).
+- **On-device editor** — a standalone **Norns Controls** port (in the Ports menu,
+  beside Norns) remaps the system menu, the global defaults, and any installed
+  script with a gamepad-driven UI — no text editing, no rebuild.
 
 Defaults on dual-stick devices (RG35XX Pro / H, etc.):
 

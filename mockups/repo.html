@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1D1F21" />
+<title>maiden · repository manager redesign</title>
+<style>
+:root{
+  --neutral-background-default:#F4F4F4; --neutral-surface-default:#f7f7f7;
+  --neutral-surface-highlighted:#f0f0f0; --neutral-surface-selected:#89b5f14f;
+  --neutral-subdued-default:#eaeaea; --neutral-medium-default:#757575;
+  --neutral-base-default:#AFAFAF; --neutral-heavy-default:#434351;
+  --neutral-trim-default:#DADADA; --interactive-background-base:#F9F9F9;
+  --interactive-medium-disabled:#C2C2C2; --interactive-medium-default:#969696;
+  --interactive-medium-hover:#656565; --interactive-medium-selected:#757575;
+  --interactive-trim-default:#C5C5C5; --interactive-surface-hover:#d3d3d3;
+  --critical-medium-default:#975031; --accent1:#DEB887; --accent2:#AD8888;
+  --overlay-fill:rgba(120,120,120,.5);
+  --card:#ffffff; --pill:#ece3d6; --pill-tx:#6b5638;
+}
+:root[data-theme="dark"]{
+  --neutral-background-default:#1D1F21; --neutral-surface-default:#25282C;
+  --neutral-surface-highlighted:#1F2123; --neutral-surface-selected:#4B4231;
+  --neutral-subdued-default:#1D2023; --neutral-medium-default:#969896;
+  --neutral-base-default:#2E2E2E; --neutral-heavy-default:#AAAAAA;
+  --neutral-trim-default:#333333; --interactive-background-base:#1B1C1D;
+  --interactive-medium-disabled:#444444; --interactive-medium-default:#777777;
+  --interactive-medium-hover:#9F9F9F; --interactive-medium-selected:#757575;
+  --interactive-trim-default:#555555; --interactive-surface-hover:#444444;
+  --critical-medium-default:#c06a45; --accent1:#DEB887; --accent2:#C99;
+  --card:#2A2E33; --pill:#3a3328; --pill-tx:#d9b98a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  background:var(--neutral-background-default);color:var(--neutral-heavy-default);-webkit-font-smoothing:antialiased}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+
+/* ---- sim chrome ---- */
+.sim-bar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:8px 12px;background:var(--neutral-surface-highlighted);border-bottom:1px solid var(--neutral-trim-default);font-size:13px}
+.sim-bar .title{font-weight:600;margin-right:2px}.sim-bar .title b{color:var(--accent2)}
+.seg{display:inline-flex;border:1px solid var(--neutral-trim-default);border-radius:7px;overflow:hidden;background:var(--neutral-surface-default)}
+.seg button{appearance:none;border:0;background:transparent;color:var(--neutral-medium-default);padding:5px 11px;
+  font:inherit;font-size:12px;cursor:pointer;border-right:1px solid var(--neutral-trim-default)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--accent1);color:#3a2c18;font-weight:600}
+.sim-bar .spacer{flex:1}.sim-bar .hint{color:var(--neutral-medium-default);font-size:11px}
+.stage{display:flex;justify-content:center;padding:18px 12px 40px;
+  background:repeating-linear-gradient(45deg,transparent,transparent 11px,rgba(125,125,125,.04) 11px,rgba(125,125,125,.04) 22px)}
+.device{width:100%;max-width:var(--dev-w,100%);height:var(--dev-h,760px);background:var(--neutral-background-default);
+  border:1px solid var(--neutral-trim-default);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.18);
+  overflow:hidden;container-type:inline-size;position:relative;transition:max-width .25s ease}
+@media(max-width:760px){
+  .stage{padding:0}
+  .sim-bar{font-size:12px;flex-wrap:nowrap;overflow-x:auto;height:46px;padding:0 10px;gap:8px}
+  .sim-bar .title,.sim-bar .hint,#size{display:none}
+  .device{height:calc(100dvh - 46px);border:0;border-radius:0;box-shadow:none;max-width:100%}
+}
+
+/* ===== maiden frame (shared) ===== */
+.maiden{display:flex;flex-direction:column;height:100%;background:var(--neutral-background-default)}
+.app-header{height:5px;flex:0 0 auto;background:linear-gradient(90deg,var(--accent1),var(--accent2))}
+.pm{flex:1;min-height:0;display:flex;flex-direction:column}
+
+/* ============================================================
+   CURRENT — faithful recreation of maiden's repo manager
+   ============================================================ */
+.cur-tabs{display:flex;padding:8px 8px 0 8px;flex:0 0 auto}
+.cur-tab{background:transparent;border:none;cursor:pointer;outline:none;font-family:monospace;font-size:100%;
+  color:var(--interactive-medium-default);border-bottom:1px solid var(--interactive-trim-default);
+  text-align:center;height:30px;width:10em;margin-bottom:8px;font-weight:bold;padding:6px 12px}
+.cur-tab.on{color:var(--interactive-medium-selected);border-bottom:1px solid var(--interactive-medium-selected)}
+.cur-scroll{flex:1;overflow:auto;padding-top:10px}
+.cur-allbtn{color:var(--interactive-medium-default);background:var(--interactive-background-base);padding:15px;
+  width:95%;margin:0 auto 5px auto;display:block;border:none;font-family:monospace;font-size:100%;cursor:pointer}
+.cur-catname{font-family:monospace;font-size:100%;text-transform:lowercase;padding:2px 10px 8px 15px;
+  color:hsl(0,0%,59%);border-bottom:1px solid var(--neutral-trim-default);margin-right:2em;display:flex;align-items:center;gap:6px}
+.cur-catname svg{width:12px;height:12px;fill:hsl(0,0%,45%)}
+.cur-entries{list-style:none;margin:0;padding:0}
+.cur-entries li{margin:0 0 8px 0}
+.cur-ctl{display:flex;flex-direction:row;justify-content:flex-end;background:var(--interactive-background-base);
+  margin-left:2em;margin-right:2em;align-items:center}
+.cur-summary{flex-grow:1}
+.cur-info{padding:6px 8px;display:flex;flex-direction:column;font-family:monospace;
+  background:var(--neutral-surface-highlighted);color:var(--neutral-medium-default)}
+.cur-info-top{display:flex;flex-direction:row;justify-content:space-between}
+.cur-info-bot{display:flex;flex-direction:row;justify-content:space-between;margin-top:2px}
+.cur-name{font-weight:bold;color:var(--interactive-medium-default)}
+.cur-badges{display:flex;gap:2px;align-items:center}
+.cur-badge{margin:0 1px;padding:0 6px 2px 6px;color:var(--neutral-heavy-default);background:var(--neutral-trim-default);border-radius:5px;font-family:monospace;font-size:90%}
+.cur-desc{margin-left:.75em;font-style:italic}
+.cur-ver{font-weight:bolder;color:var(--interactive-medium-default);margin-right:2px}
+.cur-txtbtn{background:transparent;border:none;cursor:pointer;outline:none;font-family:monospace;font-size:100%;
+  color:var(--interactive-medium-default);width:10em;padding:0}
+.cur-txtbtn:hover{color:var(--interactive-medium-hover)}
+.cur-installed{font-family:monospace;width:10em;text-align:center;color:var(--interactive-medium-disabled)}
+
+/* ============================================================
+   REDESIGNED
+   ============================================================ */
+.rd-top{flex:0 0 auto;background:var(--neutral-surface-highlighted);border-bottom:1px solid var(--neutral-trim-default)}
+.rd-tabs{display:flex;gap:4px;padding:10px 14px 0 14px}
+.rd-tab{appearance:none;border:0;background:transparent;cursor:pointer;font:inherit;font-size:14px;
+  color:var(--neutral-medium-default);padding:8px 14px 10px;border-radius:8px 8px 0 0;display:flex;gap:8px;align-items:center}
+.rd-tab .ct{font-size:11px;background:var(--neutral-trim-default);color:var(--neutral-heavy-default);border-radius:10px;padding:1px 7px}
+.rd-tab.on{color:var(--neutral-heavy-default);font-weight:600;box-shadow:inset 0 -2px 0 var(--accent2)}
+.rd-toolbar{display:flex;gap:8px;align-items:center;padding:10px 14px 12px}
+.rd-search{flex:1;display:flex;align-items:center;gap:8px;background:var(--neutral-surface-default);
+  border:1px solid var(--neutral-trim-default);border-radius:9px;padding:8px 11px;color:var(--neutral-medium-default)}
+.rd-search svg{width:15px;height:15px;fill:var(--neutral-medium-default);flex:0 0 auto}
+.rd-search input{flex:1;border:0;background:transparent;outline:none;font:inherit;font-size:14px;color:var(--neutral-heavy-default)}
+.rd-sort{display:flex;align-items:center;gap:6px;background:var(--neutral-surface-default);
+  border:1px solid var(--neutral-trim-default);border-radius:9px;padding:8px 11px;font-size:13px;color:var(--neutral-medium-default);cursor:pointer;white-space:nowrap}
+.rd-btn{appearance:none;border:1px solid var(--neutral-trim-default);background:var(--neutral-surface-default);
+  color:var(--neutral-heavy-default);font:inherit;font-size:13px;padding:8px 13px;border-radius:9px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.rd-btn:hover{background:var(--interactive-surface-hover)}
+.rd-btn svg{width:14px;height:14px;fill:currentColor}
+
+.rd-scroll{flex:1;overflow:auto;padding:14px}
+.rd-cat{margin-bottom:18px}
+.rd-cathead{display:flex;align-items:center;gap:10px;margin:0 4px 10px;color:var(--neutral-medium-default);font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+.rd-cathead .nm{font-weight:700;color:var(--neutral-heavy-default);letter-spacing:.02em;text-transform:none;font-size:14px}
+.rd-cathead .line{flex:1;height:1px;background:var(--neutral-trim-default)}
+.rd-cathead .ref{display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:var(--neutral-medium-default)}
+.rd-cathead .ref svg{width:13px;height:13px;fill:currentColor}
+
+.rd-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--neutral-trim-default);border-radius:13px;padding:14px 15px;
+  display:flex;flex-direction:column;gap:9px;transition:border-color .15s ease,transform .15s ease,box-shadow .15s ease}
+.card:hover{border-color:var(--accent2);transform:translateY(-2px);box-shadow:0 8px 22px rgba(0,0,0,.12)}
+.card .head{display:flex;align-items:flex-start;gap:10px}
+.card .id{flex:1;min-width:0}
+.card .nm{font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:15px;color:var(--neutral-heavy-default);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card .nm .ok{display:inline-flex;align-items:center;gap:4px;font-family:-apple-system,sans-serif;font-size:11px;font-weight:600;
+  color:#5a8a55;background:rgba(120,170,110,.16);border-radius:20px;padding:2px 8px}
+.card .nm .ok svg{width:11px;height:11px;fill:currentColor}
+.card .by{font-size:12.5px;color:var(--neutral-medium-default);margin-top:3px}
+.card .by a{color:var(--accent2);text-decoration:none}
+.card .desc{font-size:13.5px;line-height:1.45;color:var(--neutral-heavy-default);opacity:.86;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pill{font-size:11px;background:var(--pill);color:var(--pill-tx);border-radius:20px;padding:2px 9px;font-weight:500}
+.card .foot .grow{flex:1}
+.card .ver{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--neutral-medium-default)}
+.card .lnk{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:7px;color:var(--neutral-medium-default);cursor:pointer}
+.card .lnk:hover{background:var(--interactive-surface-hover);color:var(--neutral-heavy-default)}
+.card .lnk svg{width:15px;height:15px;fill:currentColor}
+
+/* action buttons */
+.act-row{display:flex;gap:8px;align-items:center;flex:0 0 auto}
+.btn{appearance:none;border:0;font:inherit;font-size:13px;font-weight:600;border-radius:9px;padding:8px 16px;cursor:pointer;white-space:nowrap}
+.btn-install{background:var(--accent1);color:#3a2c18}
+.btn-install:hover{filter:brightness(1.05)}
+.btn-update{background:transparent;border:1px solid var(--accent2);color:var(--accent2)}
+.btn-update:hover{background:rgba(173,136,136,.12)}
+.btn-remove{background:transparent;border:1px solid var(--neutral-trim-default);color:var(--neutral-medium-default)}
+.btn-remove:hover{border-color:var(--critical-medium-default);color:var(--critical-medium-default)}
+
+@container (max-width:640px){
+  .rd-grid{grid-template-columns:1fr}
+  .rd-toolbar{flex-wrap:wrap}
+  .rd-search{flex-basis:100%}
+  .card .head{flex-direction:column}
+  .act-row{width:100%}
+  .act-row .btn{flex:1;text-align:center}
+  .cur-ctl{flex-direction:column;align-items:stretch;margin-left:.5em;margin-right:.5em}
+  .cur-txtbtn,.cur-installed{width:100%;text-align:center;padding:8px 0;border-top:1px solid var(--neutral-trim-default)}
+}
+</style>
+</head>
+<body>
+<div class="sim-bar">
+  <span class="title">maiden <b>·</b> repository manager</span>
+  <span class="seg" id="mode">
+    <button data-m="current" class="on">current</button>
+    <button data-m="redesign">redesigned</button>
+  </span>
+  <span class="seg" id="size">
+    <button data-w="390" data-h="780">📱 phone</button>
+    <button data-w="900" data-h="720">▦ tablet</button>
+    <button data-w="9999" data-h="720" class="on">🖥 desktop</button>
+  </span>
+  <span class="seg" id="theme">
+    <button data-t="dark" class="on">dark</button>
+    <button data-t="light">light</button>
+  </span>
+  <span class="spacer"></span>
+  <span class="hint">toggle current ⟷ redesigned</span>
+</div>
+
+<div class="stage">
+  <div class="device" id="device" style="--dev-w:9999px">
+    <div class="maiden">
+      <div class="app-header"></div>
+      <div class="pm" id="pm"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- shared data: real-ish norns community scripts ---------- */
+const ICON={
+  refresh:'M27.802 5.197c-2.925-3.194-7.13-5.197-11.802-5.197-8.837 0-16 7.163-16 16h3c0-7.18 5.82-13 13-13 3.844 0 7.298 1.669 9.678 4.322l-4.678 4.678h11v-11l-4.198 4.197zM29 16c0 7.18-5.82 13-13 13-3.844 0-7.298-1.669-9.678-4.322l4.678-4.678h-11v11l4.198-4.197c2.925 3.194 7.13 5.197 11.802 5.197 8.837 0 16-7.163 16-16h-3z',
+  search:'M31.008 27.231l-7.58-6.447c-0.784-0.705-1.622-1.029-2.299-0.998 1.789-2.096 2.871-4.815 2.871-7.787 0-6.627-5.373-12-12-12s-12 5.373-12 12 5.373 12 12 12c2.972 0 5.691-1.082 7.787-2.871-0.031 0.677 0.293 1.515 0.998 2.299l6.447 7.58c1.104 1.226 2.907 1.33 4.007 0.23s0.997-2.903-0.23-4.006zM12 20c-4.418 0-8-3.582-8-8s3.582-8 8-8 8 3.582 8 8-3.582 8-8 8z',
+  book:'M28 4v26h-21c-1.657 0-3-1.343-3-3s1.343-3 3-3h19v-24h-20c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h24v-28h-2z',
+  chat:'M16 2c-8.837 0-16 5.82-16 13 0 3.872 2.097 7.348 5.417 9.738-0.628 2.376-2.272 4.402-2.295 4.426-0.241 0.262-0.301 0.643-0.158 0.969s0.476 0.541 0.836 0.541c3.155 0 5.756-1.061 7.583-2.165 1.482 0.413 3.060 0.633 4.617 0.633 8.837 0 16-5.82 16-13s-7.163-13-16-13z',
+  check:'M27 4l-15 15-7-7-5 5 12 12 20-20z',
+};
+const data={
+  installed:[
+    {n:'awake',a:'tehn',d:'a sketch — grid sequencer with sample playback and a polyphonic synth voice.',v:'1.2.0',tags:['sequencer','grid'],doc:1,disc:1},
+    {n:'cheat codes 2',a:'dan derks',d:'a tool for tactile, performative sampling. multi-page sample slicing and pattern recording.',v:'2.0.4',tags:['sampler','grid','arc'],doc:1,disc:1},
+    {n:'oooooo',a:'infinite digits',d:'six-voice digital tape loops with adjustable speed, pan and feedback per voice.',v:'1.3.0',tags:['looper'],doc:1,disc:1},
+  ],
+  available:[
+    {n:'mlr',a:'tehn',d:'the original monome live-remix instrument. cut and re-trigger samples across the grid.',v:'3.1.0',tags:['sampler','grid'],doc:1,disc:1,inst:0},
+    {n:'takt',a:'jah',d:'a step sequencer with parameter locks, micro-timing and probability per trig.',v:'0.9.2',tags:['sequencer'],doc:1,disc:1,inst:0},
+    {n:'less concepts',a:'tyler etters',d:'a generative drone machine for ambient drift and slow evolving textures.',v:'1.0.0',tags:['generative','drone'],doc:0,disc:1,inst:0},
+    {n:'arcologies',a:'rylee alanza lyman',d:'a living instrument for the monome arc — eno-esque generative ecosystems.',v:'1.1.1',tags:['generative','arc'],doc:1,disc:1,inst:0},
+    {n:'pools',a:'kyle smith',d:'a probabilistic sequencer of interconnected pools of notes that feed one another.',v:'0.4.0',tags:['sequencer','generative'],doc:0,disc:1,inst:0},
+    {n:'oooooo',a:'infinite digits',d:'six-voice digital tape loops with adjustable speed, pan and feedback per voice.',v:'1.3.0',tags:['looper'],doc:1,disc:1,inst:1},
+    {n:'pianoteq',a:'jordan besek',d:'physical-modelling piano engine wrapper with velocity and pedal handling.',v:'0.2.0',tags:['synth'],doc:0,disc:0,inst:0},
+    {n:'nisp',a:'spd',d:'a tiny lisp on norns — livecode patterns and synthesis from the repl.',v:'0.3.1',tags:['livecode','utility'],doc:1,disc:1,inst:0},
+  ],
+};
+
+/* ---------- CURRENT (faithful) ---------- */
+function renderCurrent(tab){
+  const list = tab==='installed'?data.installed:data.available;
+  const allBtn = tab==='installed'?'update all':'refresh all';
+  const rows = list.map(p=>{
+    let ctrl;
+    if(tab==='installed'){
+      ctrl=`<button class="cur-txtbtn">update</button><button class="cur-txtbtn">remove</button>`;
+    } else {
+      ctrl = p.inst ? `<div class="cur-installed">installed</div>`
+                    : `<button class="cur-txtbtn">install</button>`;
+    }
+    const badges=(p.tags||[]).map(t=>`<span class="cur-badge">${t}</span>`).join('');
+    const doc=p.doc?`<svg viewBox="0 0 32 32" width="13" height="13" style="fill:hsl(0,0%,59%)"><path d="${ICON.book}"/></svg>`:'';
+    return `<li><div class="cur-ctl">
+      <div class="cur-summary"><div class="cur-info">
+        <div class="cur-info-top"><span class="cur-name">${p.n} / ${p.a}</span>
+          <span class="cur-badges">${doc}${badges}</span></div>
+        <div class="cur-info-bot"><span class="cur-desc">${p.d}</span><span class="cur-ver">${p.v}</span></div>
+      </div></div>${ctrl}
+    </div></li>`;
+  }).join('');
+  return `<div class="cur-tabs">
+      <button class="cur-tab ${tab==='installed'?'on':''}" data-ct="installed">installed</button>
+      <button class="cur-tab ${tab==='available'?'on':''}" data-ct="available">available</button>
+    </div>
+    <div class="cur-scroll">
+      <button class="cur-allbtn">${allBtn}</button>
+      <div class="cur-catname">community
+        <svg viewBox="0 0 32 32"><path d="${ICON.refresh}"/></svg></div>
+      <ul class="cur-entries">${rows}</ul>
+    </div>`;
+}
+
+/* ---------- REDESIGNED ---------- */
+function card(p,tab){
+  const ok = (tab==='installed'||p.inst)
+    ? `<span class="ok"><svg viewBox="0 0 32 32"><path d="${ICON.check}"/></svg>installed</span>`:'';
+  let actions;
+  if(tab==='installed'){
+    actions=`<button class="btn btn-update">Update</button><button class="btn btn-remove">Remove</button>`;
+  } else if(p.inst){
+    actions=`<button class="btn btn-remove">Remove</button>`;
+  } else {
+    actions=`<button class="btn btn-install">Install</button>`;
+  }
+  const pills=(p.tags||[]).map(t=>`<span class="pill">${t}</span>`).join('');
+  const doc=p.doc?`<span class="lnk" title="documentation"><svg viewBox="0 0 32 32"><path d="${ICON.book}"/></svg></span>`:'';
+  const disc=p.disc?`<span class="lnk" title="discussion"><svg viewBox="0 0 32 32"><path d="${ICON.chat}"/></svg></span>`:'';
+  return `<div class="card">
+    <div class="head">
+      <div class="id">
+        <div class="nm">${p.n} ${ok}</div>
+        <div class="by">by <a href="#">${p.a}</a></div>
+      </div>
+      <div class="act-row">${actions}</div>
+    </div>
+    <div class="desc">${p.d}</div>
+    <div class="foot">${pills}<span class="grow"></span>${doc}${disc}<span class="ver">v${p.v}</span></div>
+  </div>`;
+}
+function renderRedesign(tab){
+  const list = tab==='installed'?data.installed:data.available;
+  const cards = list.map(p=>card(p,tab)).join('');
+  const allBtn = tab==='installed'
+    ? `<button class="rd-btn"><svg viewBox="0 0 32 32"><path d="${ICON.refresh}"/></svg>Update all</button>`
+    : `<button class="rd-btn"><svg viewBox="0 0 32 32"><path d="${ICON.refresh}"/></svg>Refresh all</button>`;
+  const cathead = tab==='available'
+    ? `<div class="rd-cathead"><span class="nm">community</span><span>${list.length} scripts</span>
+         <span class="line"></span><span class="ref"><svg viewBox="0 0 32 32"><path d="${ICON.refresh}"/></svg>refresh</span></div>`
+    : '';
+  return `<div class="rd-top">
+      <div class="rd-tabs">
+        <button class="rd-tab ${tab==='installed'?'on':''}" data-rt="installed">installed <span class="ct">${data.installed.length}</span></button>
+        <button class="rd-tab ${tab==='available'?'on':''}" data-rt="available">available <span class="ct">${data.available.length}</span></button>
+      </div>
+      <div class="rd-toolbar">
+        <label class="rd-search"><svg viewBox="0 0 32 32"><path d="${ICON.search}"/></svg>
+          <input placeholder="search ${list.length} scripts, authors, tags…"></label>
+        <span class="rd-sort">sort: recent ▾</span>
+        ${allBtn}
+      </div>
+    </div>
+    <div class="rd-scroll">
+      <div class="rd-cat">${cathead}<div class="rd-grid">${cards}</div></div>
+    </div>`;
+}
+
+/* ---------- wiring ---------- */
+let MODE='current', TAB='available';
+function paint(){
+  const pm=document.getElementById('pm');
+  pm.innerHTML = MODE==='current'?renderCurrent(TAB):renderRedesign(TAB);
+  pm.querySelectorAll('[data-ct]').forEach(b=>b.onclick=()=>{TAB=b.dataset.ct;paint();});
+  pm.querySelectorAll('[data-rt]').forEach(b=>b.onclick=()=>{TAB=b.dataset.rt;paint();});
+}
+document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#mode button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');MODE=b.dataset.m;paint();
+});
+const device=document.getElementById('device');
+document.querySelectorAll('#size button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#size button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');device.style.setProperty('--dev-w',b.dataset.w+'px');device.style.setProperty('--dev-h',b.dataset.h+'px');
+});
+document.querySelectorAll('#theme button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#theme button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');
+  if(b.dataset.t==='dark')document.documentElement.setAttribute('data-theme','dark');
+  else document.documentElement.removeAttribute('data-theme');
+});
+document.documentElement.setAttribute('data-theme','dark');
+paint();
+</script>
+</body>
+</html>

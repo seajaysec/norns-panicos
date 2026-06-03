@@ -1,0 +1,1699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1D1F21" id="metaTheme" />
+<title>maiden · interactive redesign</title>
+
+<!-- Ace editor (maiden's real editor component) -->
+<script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.6/src-min-noconflict/ace.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.6/src-min-noconflict/mode-lua.js"></script>
+
+<style>
+:root{
+  --bg:#1D1F21; --panel:#25282C; --panel2:#1F2123; --trim:#333; --fg:#C5C8C6;
+  --muted:#969896; --faint:#5a5f63; --accent:#DEB887; --accent2:#CC9999; --ok:#8aa872; --err:#c06a45;
+  --efont:13px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;overflow-x:hidden;overscroll-behavior-x:none}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  background:var(--bg);color:var(--fg);-webkit-font-smoothing:antialiased}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+button{font-family:inherit}
+
+/* ---------- sim chrome ---------- */
+.sim-bar{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:8px 12px;background:var(--panel2);border-bottom:1px solid var(--trim);font-size:13px;color:var(--muted)}
+.sim-bar .title{font-weight:600;color:var(--fg)}.sim-bar .title b{color:var(--accent2)}
+.seg{display:inline-flex;border:1px solid var(--trim);border-radius:7px;overflow:hidden;background:var(--panel)}
+.seg button{appearance:none;border:0;background:transparent;color:var(--muted);padding:5px 11px;font-size:12px;
+  cursor:pointer;border-right:1px solid var(--trim)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--accent);color:#241a0d;font-weight:600}
+.sim-bar .spacer{flex:1}.sim-bar .hint{font-size:11px}
+.sim-bar .hint b{color:var(--accent)}
+.stage{display:flex;justify-content:center;padding:18px 12px 40px;
+  background:repeating-linear-gradient(45deg,transparent,transparent 11px,rgba(125,125,125,.05) 11px,rgba(125,125,125,.05) 22px)}
+.device{width:100%;max-width:var(--dev-w,100%);height:var(--dev-h,calc(100dvh - 96px));max-height:calc(100dvh - 96px);
+  background:var(--bg);border:1px solid var(--trim);border-radius:10px;box-shadow:0 14px 44px rgba(0,0,0,.3);overflow:hidden;
+  container-type:inline-size;position:relative;transition:max-width .25s ease,height .25s ease}
+@media(max-width:760px){
+  .stage{padding:0}
+  .sim-bar{display:none}                       /* dev-only chrome; full screen to the app on phones */
+  .device{height:100dvh;border:0;border-radius:0;box-shadow:none;max-width:100%}
+}
+
+/* ===================== maiden ===================== */
+.maiden{display:flex;flex-direction:column;height:100%;background:var(--bg);color:var(--fg)}
+.app-header{height:5px;flex:0 0 auto;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.body{flex:1;display:flex;min-height:0;position:relative}
+
+/* mobile top bar */
+.mtop{display:none;align-items:center;gap:8px;height:48px;padding:0 6px;flex:0 0 auto;
+  background:var(--panel2);border-bottom:1px solid var(--trim)}
+.mtop .hbtn{width:40px;height:40px;display:grid;place-items:center;border-radius:9px;color:var(--muted);background:transparent;border:0}
+.mtop .hbtn:active{background:color-mix(in srgb,var(--fg) 12%,transparent)}
+.mtop .hbtn svg{width:22px;height:22px;fill:currentColor}
+.mtop .name{font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex:1;min-width:0}
+.mtop .name .dot{width:7px;height:7px;border-radius:50%;background:var(--accent2);flex:0 0 auto}
+.mtop .name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* activity bar */
+.activity{flex:0 0 52px;display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px;
+  background:var(--panel2);border-right:1px solid var(--trim)}
+.act{width:40px;height:40px;display:grid;place-items:center;border-radius:9px;cursor:pointer;color:var(--muted);
+  position:relative;background:transparent;border:0}
+.act:hover{background:color-mix(in srgb,var(--fg) 10%,transparent);color:var(--fg)}
+.act.on{color:var(--accent2)}
+.act.on::before{content:"";position:absolute;left:-8px;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--accent2)}
+.act svg{width:20px;height:20px;fill:currentColor}
+.act.grow{margin-top:auto}
+
+/* explorer / tree */
+/* docked explorer retired — the file tree is now a floating drawer on every size */
+.explorer{display:none}
+.pane-head{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;font-size:11px;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--trim);flex:0 0 auto}
+.pane-head .tools{margin-left:auto;display:flex;gap:8px}
+.pane-head .tools svg{width:14px;height:14px;fill:var(--muted);cursor:pointer}
+.tree{overflow:auto;padding:6px 0;font-size:13px;flex:1}
+.row{display:flex;align-items:center;gap:6px;padding:5px 12px;cursor:pointer;white-space:nowrap;user-select:none}
+.row:hover{background:color-mix(in srgb,var(--fg) 7%,transparent)}
+.row.sel{background:color-mix(in srgb,var(--accent2) 26%,transparent)}
+.row .tw{width:12px;text-align:center;color:var(--muted);font-size:9px;transition:transform .12s}
+.row.open .tw{transform:rotate(90deg)}
+.row .ic{width:15px;height:15px;flex:0 0 auto;fill:var(--muted)}
+.row.dir .ic{fill:var(--accent)}
+.row .nm{overflow:hidden;text-overflow:ellipsis}
+.kids{overflow:hidden}
+
+/* main = editor + repl */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.tabs{display:flex;height:34px;flex:0 0 auto;background:var(--panel2);border-bottom:1px solid var(--trim);overflow:auto}
+.tab{display:flex;align-items:center;gap:8px;padding:0 14px;font-size:13px;cursor:pointer;border-right:1px solid var(--trim);
+  color:var(--muted);white-space:nowrap;background:transparent;border-top:0;border-bottom:0;border-left:0}
+.tab.on{background:var(--panel);color:var(--fg);box-shadow:inset 0 -2px 0 var(--accent2)}
+.tab .dot{width:7px;height:7px;border-radius:50%;background:var(--accent2);opacity:0}
+.tab.dirty .dot{opacity:1}
+
+.editorhost{flex:1;min-height:0;position:relative;background:var(--panel)}
+#editor{position:absolute;inset:0;font-size:var(--efont)}
+#editor .ace_editor,.fallback{font-size:var(--efont)!important}
+.fallback{position:absolute;inset:0;width:100%;height:100%;border:0;outline:none;resize:none;padding:12px 14px;
+  background:var(--panel);color:var(--fg);font-family:ui-monospace,Menlo,monospace;line-height:1.6;tab-size:2}
+
+.vsplit{flex:0 0 9px;background:var(--trim);opacity:.5;cursor:row-resize;position:relative;touch-action:none}
+.vsplit:hover,.vsplit.drag{opacity:1;background:var(--accent2)}
+.vsplit::after{content:"";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:38px;height:3px;border-radius:2px;background:var(--bg);opacity:.7}
+
+/* editing view modes + view toggle (desktop / iPad) */
+.viewseg{display:none;margin-left:auto;align-self:center;margin-right:8px}
+.tabs .viewseg{display:none}
+.viewseg button{appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;
+  padding:5px 9px;cursor:pointer;border-radius:7px;display:inline-flex;align-items:center;gap:5px}
+.viewseg button.on{background:color-mix(in srgb,var(--accent2) 22%,transparent);color:var(--accent2)}
+.viewseg button svg{width:14px;height:14px;fill:currentColor}
+
+/* repl */
+.repl{flex:0 0 var(--repl-h,38%);min-height:0;display:flex;flex-direction:column;border-top:1px solid var(--trim);background:var(--bg)}
+.repl-out{flex:1;overflow:auto;padding:10px 14px;font-size:12.5px;line-height:1.55;color:var(--fg);
+  white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace}
+.repl-out .sys{color:var(--accent2)}.repl-out .ok{color:var(--ok)}
+.repl-out .meta{color:var(--muted)}.repl-out .err{color:var(--err)}
+.repl-out .cmd{color:var(--accent)}
+.repl-bar{flex:0 0 auto;border-top:1px solid var(--trim);background:var(--panel);position:relative}
+.repl-row{display:flex;align-items:stretch;gap:8px;padding:7px 10px}
+.repl-target{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.repl-target .lbl{font-size:11px;color:var(--muted)}
+.tgt{display:inline-flex;border:1px solid var(--trim);border-radius:7px;overflow:hidden}
+.tgt button{appearance:none;border:0;border-right:1px solid var(--trim);background:var(--panel2);color:var(--muted);
+  font-size:12px;padding:6px 12px;cursor:pointer;font-family:ui-monospace,monospace}
+.tgt button:last-child{border-right:0}
+.tgt button.on{background:var(--accent);color:#241a0d;font-weight:700}
+.repl-inwrap{flex:1;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--trim);
+  border-radius:8px;padding:0 10px}
+.repl-inwrap .pr{color:var(--accent2);font-family:ui-monospace,monospace;font-weight:700}
+.repl-in{flex:1;border:0;background:transparent;outline:none;color:var(--fg);font-family:ui-monospace,Menlo,monospace;
+  font-size:13px;padding:9px 0}
+.repl-send{appearance:none;border:0;background:var(--accent);color:#241a0d;font-weight:700;border-radius:8px;
+  padding:0 14px;cursor:pointer;flex:0 0 auto;font-size:13px}
+
+/* autocomplete */
+.ac{position:absolute;left:10px;right:10px;bottom:calc(100% - 0px);margin-bottom:6px;z-index:30;
+  background:var(--panel);border:1px solid var(--trim);border-radius:10px;overflow:hidden;display:none;
+  box-shadow:0 -8px 26px rgba(0,0,0,.3);max-height:230px;overflow-y:auto}
+.ac.show{display:block}
+.ac-item{display:flex;align-items:baseline;gap:8px;padding:8px 12px;cursor:pointer;border-bottom:1px solid color-mix(in srgb,var(--trim) 60%,transparent)}
+.ac-item:last-child{border-bottom:0}
+.ac-item.hl{background:color-mix(in srgb,var(--accent2) 22%,transparent)}
+.ac-item .fn{font-family:ui-monospace,monospace;font-size:13px;color:var(--fg);font-weight:600}
+.ac-item .sig{font-family:ui-monospace,monospace;font-size:12px;color:var(--accent2)}
+.ac-item .doc{font-size:11.5px;color:var(--muted);margin-left:auto;text-align:right;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* mobile chrome */
+.mtabs{display:none;align-items:stretch;height:58px;flex:0 0 auto;background:var(--panel2);border-top:1px solid var(--trim);
+  padding-bottom:env(safe-area-inset-bottom)}
+.mtab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--muted);
+  cursor:pointer;font-size:10.5px;background:transparent;border:0}
+.mtab svg{width:22px;height:22px;fill:currentColor}
+.mtab.on{color:var(--accent2)}
+
+.scrim{display:none;position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:30}
+.drawer{position:absolute;top:0;bottom:0;left:0;width:min(82%,300px);z-index:31;background:var(--panel);
+  border-right:1px solid var(--trim);transform:translateX(-102%);transition:transform .22s ease;display:flex;flex-direction:column;
+  box-shadow:8px 0 30px rgba(0,0,0,.35)}
+.maiden.drawer-open .scrim{display:block}
+.maiden.drawer-open .drawer{transform:translateX(0)}
+
+/* ============ repo manager view ============ */
+.repoview{flex:1;min-width:0;min-height:0;display:none;flex-direction:column;background:var(--bg);container-type:inline-size}
+.repoview.on{display:flex}
+.rd-top{flex:0 0 auto;background:var(--panel2);border-bottom:1px solid var(--trim);min-width:0}
+.rd-tabs{display:flex;gap:2px;padding:8px 12px 0;overflow:hidden}
+.rd-tab{appearance:none;border:0;background:transparent;cursor:pointer;font-size:13.5px;color:var(--muted);
+  padding:7px 12px 9px;border-radius:8px 8px 0 0;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.rd-tab .ct{font-size:11px;background:var(--trim);color:var(--fg);border-radius:10px;padding:1px 7px}
+.rd-tab.on{color:var(--fg);font-weight:600;box-shadow:inset 0 -2px 0 var(--accent2)}
+.rd-toolbar{display:flex;gap:7px;align-items:center;padding:8px 12px 8px;min-width:0}
+.rd-search{flex:1;min-width:0;display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--trim);
+  border-radius:9px;padding:7px 11px}
+.rd-search svg{width:15px;height:15px;fill:var(--muted);flex:0 0 auto}
+.rd-search input{flex:1;min-width:0;border:0;background:transparent;outline:none;font-size:14px;color:var(--fg)}
+.rd-pill-btn{border:1px solid var(--trim);background:var(--panel);color:var(--fg);font-size:13px;padding:7px 12px;
+  border-radius:9px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.rd-pill-btn svg{width:14px;height:14px;fill:currentColor}
+.rd-sort{appearance:none;-webkit-appearance:none;border:1px solid var(--trim);background:var(--panel);color:var(--fg);
+  font:inherit;font-size:13px;padding:7px 26px 7px 12px;border-radius:9px;cursor:pointer;white-space:nowrap;
+  background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-position:calc(100% - 14px) 50%,calc(100% - 9px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+.rd-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:20px 10px 8px}
+.rd-pager .pginfo{font-size:12.5px;color:var(--muted)}
+.rd-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:14px;-webkit-overflow-scrolling:touch}
+.rd-cathead{display:flex;align-items:center;gap:10px;margin:0 4px 10px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.rd-cathead .nm{font-weight:700;color:var(--fg);font-size:14px;text-transform:none}
+.rd-cathead .line{flex:1;height:1px;background:var(--trim)}
+.rd-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--trim);border-radius:13px;padding:14px 15px;display:flex;
+  flex-direction:column;gap:9px;transition:border-color .15s,transform .15s,box-shadow .15s}
+.card:hover{border-color:var(--accent2);box-shadow:0 4px 16px rgba(0,0,0,.14)}  /* no transform → no scroll repaint jank */
+.card .head{display:flex;align-items:flex-start;gap:10px}
+.card .id{flex:1;min-width:0}
+.card .nm{font-family:ui-monospace,monospace;font-weight:700;font-size:15px;color:var(--fg);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card .nm .okb{display:inline-flex;align-items:center;gap:4px;font-family:-apple-system,sans-serif;font-size:11px;font-weight:600;
+  color:var(--ok);background:color-mix(in srgb,var(--ok) 18%,transparent);border-radius:20px;padding:2px 8px}
+.card .nm .okb svg{width:11px;height:11px;fill:currentColor}
+.card .by{font-size:12.5px;color:var(--muted);margin-top:3px}
+.card .by a{color:var(--accent2);text-decoration:none}
+.card .desc{font-size:13.5px;line-height:1.45;color:var(--fg);opacity:.85;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pill{font-size:11px;background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent);border-radius:20px;padding:2px 9px;font-weight:600}
+.card .foot .grow{flex:1}
+.card .ver{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--muted)}
+.card .lnk{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:7px;color:var(--muted);cursor:pointer}
+.card .lnk:hover{background:color-mix(in srgb,var(--fg) 12%,transparent);color:var(--fg)}
+.card .lnk svg{width:15px;height:15px;fill:currentColor}
+.act-row{display:flex;gap:8px;flex:0 0 auto}
+.btn{appearance:none;border:0;font-size:13px;font-weight:600;border-radius:9px;padding:8px 16px;cursor:pointer;white-space:nowrap}
+.btn-install{background:var(--accent);color:#241a0d}
+.btn-update{background:transparent;border:1px solid var(--accent2);color:var(--accent2)}
+.btn-remove{background:transparent;border:1px solid var(--trim);color:var(--muted)}
+.btn-remove:hover{border-color:var(--err);color:var(--err)}
+.btn-danger{background:var(--err);color:#fff;border:0}
+.btn-danger:hover{filter:brightness(1.08)}
+
+/* source tags + filters + github */
+.srctag{font-size:10.5px;font-weight:600;border-radius:20px;padding:2px 8px 2px 6px;display:inline-flex;align-items:center;gap:5px}
+.srctag i{width:7px;height:7px;border-radius:50%;display:block;flex:0 0 auto}
+.card.gh{border-left:3px solid var(--srcc,var(--trim))}
+.card .stars{font-size:11.5px;color:var(--muted);font-family:ui-monospace,monospace}
+.lock{font-size:10px;font-weight:600;color:var(--muted);border:1px solid var(--trim);border-radius:20px;padding:1px 7px;text-transform:uppercase;letter-spacing:.04em}
+.srcbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 12px 8px;min-width:0}
+.srcbar .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.srcchip{display:inline-flex;align-items:center;gap:6px;font-size:12px;border-radius:20px;padding:4px 11px;cursor:pointer;
+  border:1px solid color-mix(in srgb,var(--c) 45%,transparent);color:var(--c);background:transparent}
+.srcchip.on{background:color-mix(in srgb,var(--c) 20%,transparent)}
+.srcchip.off{opacity:.4;text-decoration:line-through}
+.srcchip i{width:8px;height:8px;border-radius:50%;background:var(--c)}
+.srcchip.add{color:var(--muted);border-color:var(--trim);border-style:dashed}
+.gh-empty{margin:30px auto;max-width:440px;text-align:center;color:var(--muted)}
+.gh-empty .big{width:54px;height:54px;margin:0 auto 14px;display:grid;place-items:center;border-radius:14px;
+  background:color-mix(in srgb,var(--fg) 8%,transparent)}
+.gh-empty .big svg{width:30px;height:30px;fill:var(--muted)}
+.gh-empty h3{color:var(--fg);font-size:16px;margin:0 0 8px}
+.gh-empty p{font-size:13.5px;line-height:1.5;margin:0 0 16px}
+
+/* config: github + sources */
+.gh-box{background:var(--bg);border:1px solid var(--trim);border-radius:11px;padding:12px;margin-bottom:12px}
+.gh-row{display:flex;gap:8px;align-items:center}
+.gh-row .theme-search{flex:1;margin:0}
+.gh-hint{font-size:12px;color:var(--muted);margin-top:9px;line-height:1.45}
+.gh-connected{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--fg)}
+.gh-connected .ok{color:var(--ok);font-weight:700}
+.gh-connected button{margin-left:auto;background:transparent;border:1px solid var(--trim);color:var(--muted);
+  border-radius:7px;padding:5px 11px;cursor:pointer;font-size:12px}
+.src-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.src-item{display:flex;align-items:center;gap:10px;padding:9px 11px;background:var(--bg);border:1px solid var(--trim);border-radius:9px}
+.src-item .sw{width:12px;height:12px;border-radius:50%;flex:0 0 auto}
+.src-item .nm{font-size:13px;color:var(--fg);font-weight:600}
+.src-item .ty{font-size:11px;color:var(--muted)}
+.src-item .tog{margin-left:auto;width:38px;height:22px;border-radius:20px;background:var(--trim);position:relative;cursor:pointer;transition:background .15s}
+.src-item .tog::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--fg);transition:left .15s}
+.src-item .tog.on{background:var(--accent)}
+.src-item .tog.on::after{left:18px;background:#241a0d}
+.src-item.locked .ty::after{content:" · requires github";color:var(--accent2)}
+
+/* trust gate */
+.trust-modal{width:min(440px,100%);align-self:center}
+.trust-msg{font-size:14px;color:var(--fg);margin:0 0 12px;line-height:1.5}
+.trust-warn{font-size:13px;line-height:1.5;color:var(--fg);background:color-mix(in srgb,var(--err) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--err) 40%,transparent);border-radius:10px;padding:11px 13px;margin-bottom:14px}
+.trust-snooze{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-bottom:16px}
+.trust-snooze select{background:var(--bg);color:var(--fg);border:1px solid var(--trim);border-radius:7px;padding:4px 8px;font:inherit;font-size:13px}
+.trust-snooze .trust-cap{flex-basis:100%;font-size:11px;color:var(--faint)}
+.trust-actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+.trust-actions .btn{padding:9px 18px}
+.eng-rename-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-bottom:16px}
+.eng-rename-input{flex:1;min-width:140px;background:var(--bg);border:1px solid var(--accent2);border-radius:7px;
+  color:var(--fg);font-family:ui-monospace,monospace;font-size:13px;padding:7px 10px;outline:none}
+
+/* collapsible / auto-hiding repo toolbar */
+.rd-toggle{margin-left:auto;width:30px;height:30px;display:grid;place-items:center;border:0;background:transparent;
+  color:var(--muted);cursor:pointer;border-radius:8px;align-self:flex-end;margin-bottom:6px}
+.rd-toggle:hover{background:color-mix(in srgb,var(--fg) 10%,transparent);color:var(--fg)}
+.rd-toggle svg{width:16px;height:16px;fill:currentColor;transition:transform .2s}
+.repoview.collapsed .rd-toggle svg{transform:rotate(180deg)}
+.rd-toolbar,.srcbar{transition:max-height .22s ease,opacity .15s ease,padding .22s ease;overflow:hidden;max-height:140px}
+.repoview.collapsed .rd-toolbar,.repoview.collapsed .srcbar{max-height:0;opacity:0;padding-top:0;padding-bottom:0}
+
+/* cards are always expanded (rich view) */
+.card{cursor:default}
+.okb.upd{color:var(--accent2)!important;background:color-mix(in srgb,var(--accent2) 18%,transparent)!important}
+.pill{cursor:pointer}
+.expand-cue{color:var(--muted);font-size:11px;transition:transform .18s;margin-left:2px}
+.card.open .expand-cue{transform:rotate(180deg)}
+.card-more{display:none;margin-top:11px;padding-top:11px;border-top:1px solid var(--trim)}
+.card.open .card-more{display:block}
+.card.open .desc{-webkit-line-clamp:unset}
+.more-meta{font-size:11.5px;color:var(--muted);margin-bottom:9px}
+.more-links{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}
+.more-link{font-size:12px;text-decoration:none;color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 38%,transparent);
+  border-radius:7px;padding:4px 9px;background:color-mix(in srgb,var(--accent2) 10%,transparent)}
+.more-link:hover{background:color-mix(in srgb,var(--accent2) 20%,transparent)}
+.more-demo{font-size:12px}
+.demo-btn{appearance:none;border:1px solid var(--trim);background:var(--panel2);color:var(--fg);font:inherit;font-size:12px;
+  border-radius:7px;padding:5px 11px;cursor:pointer}
+.demo-btn:hover{background:var(--interactive-surface-hover)}
+.more-nodemo{color:var(--faint);font-style:italic}
+.more-demo iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:9px;margin-top:4px}
+.more-demo iframe.sc{aspect-ratio:auto;height:120px}  /* soundcloud audio player */
+.more-demo .demo-ext{display:inline-block;color:var(--accent2);text-decoration:none;font-weight:600}
+
+/* install status dock */
+.install-dock{position:absolute;right:14px;bottom:14px;z-index:45;width:min(300px,calc(100% - 28px));
+  display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.ijob{pointer-events:auto;background:var(--panel);border:1px solid var(--trim);border-radius:11px;padding:11px 12px;
+  box-shadow:0 8px 26px rgba(0,0,0,.32);animation:ijin .2s ease}
+@keyframes ijin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.ijob .ihead{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg);font-weight:600}
+.ijob .ispin{width:13px;height:13px;border:2px solid var(--trim);border-top-color:var(--accent2);border-radius:50%;animation:isp .7s linear infinite;flex:0 0 auto}
+@keyframes isp{to{transform:rotate(360deg)}}
+.ijob .istatus{margin-left:auto;font-size:11px}
+.ijob.ok .istatus{color:var(--ok)}.ijob.err .istatus{color:var(--err)}
+.ijob .ilog{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);margin-top:6px;white-space:pre-wrap;max-height:64px;overflow:auto}
+.ijob .iclose{margin-left:6px;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:13px}
+@media(max-width:640px){ .install-dock{left:10px;right:10px;width:auto;bottom:70px} }
+
+/* B1: multi-select + bulk install */
+.repoview{position:relative}
+.csel{display:inline-flex;align-items:center;margin-right:3px;flex:0 0 auto}
+.csel input{width:16px;height:16px;accent-color:var(--accent2);cursor:pointer;margin:0}
+.selall-btn{border:1px solid var(--trim);background:transparent;color:var(--muted);font-size:11.5px;border-radius:7px;
+  padding:3px 9px;cursor:pointer;white-space:nowrap}
+.selall-btn:hover{color:var(--fg)}
+.bulkbar{position:absolute;left:0;right:0;bottom:0;z-index:25;display:none;align-items:center;gap:10px;
+  padding:10px 14px;background:var(--panel2);border-top:1px solid var(--trim);box-shadow:0 -6px 22px rgba(0,0,0,.25)}
+.bulkbar.show{display:flex}
+.bulkbar .bcount{font-weight:600;color:var(--fg);font-size:13px}
+.bulkbar .btn-install{margin-left:auto}
+.rd-scroll{padding-bottom:64px}   /* room so the bulk bar never covers the last card */
+
+/* ============ first-class file manager ============ */
+.filesview{flex:1;min-width:0;min-height:0;display:none;flex-direction:column;background:var(--bg);position:relative;container-type:inline-size}
+.filesview.on{display:flex}
+.fv-bar{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--panel2);border-bottom:1px solid var(--trim);flex-wrap:wrap}
+.fv-crumbs{display:flex;align-items:center;gap:1px;flex:1;min-width:120px;overflow:auto;font-size:13px}
+.fv-crumb{color:var(--accent2);cursor:pointer;white-space:nowrap;padding:3px 7px;border-radius:6px;background:transparent;border:0;font:inherit;font-size:13px}
+.fv-crumb:hover{background:color-mix(in srgb,var(--fg) 9%,transparent)}
+.fv-crumb.cur{color:var(--fg);font-weight:600;cursor:default}
+.fv-sep{color:var(--faint)}
+.fv-btn{border:1px solid var(--trim);background:var(--panel);color:var(--fg);font-size:12.5px;border-radius:8px;padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.fv-btn:hover{background:var(--interactive-surface-hover)}
+.fv-btn svg{width:14px;height:14px;fill:currentColor}
+.fv-btn[disabled]{opacity:.45;cursor:not-allowed;pointer-events:none}
+.fv-btn.primary{background:var(--accent);color:#241a0d;border-color:transparent;font-weight:600}
+.fv-btn.danger{border-color:color-mix(in srgb,var(--err) 50%,transparent);color:var(--err)}
+.fv-btn.danger:hover{background:color-mix(in srgb,var(--err) 14%,transparent)}
+.fv-upload-wrap{position:relative;display:inline-flex}
+.fv-menu{position:absolute;top:calc(100% + 5px);right:0;z-index:35;background:var(--panel);border:1px solid var(--trim);
+  border-radius:10px;padding:5px;display:none;flex-direction:column;min-width:170px;box-shadow:0 10px 28px rgba(0,0,0,.4)}
+.fv-menu.show{display:flex}
+.fv-menu button{appearance:none;border:0;background:transparent;color:var(--fg);font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:7px;cursor:pointer}
+.fv-menu button:hover{background:color-mix(in srgb,var(--fg) 10%,transparent)}
+.fv-menu-hint{font-size:11px;color:var(--faint);padding:6px 10px 3px;border-top:1px solid var(--trim);margin-top:3px}
+/* help modal */
+.help-keys{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px}
+.help-keys>div{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.help-keys kbd{font-family:ui-monospace,monospace;font-size:11px;background:var(--bg);border:1px solid var(--trim);border-bottom-width:2px;border-radius:5px;padding:2px 6px;color:var(--fg)}
+.help-links{display:flex;flex-wrap:wrap;gap:8px}
+.help-links a{font-size:13px;text-decoration:none;color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 38%,transparent);
+  border-radius:8px;padding:6px 11px;background:color-mix(in srgb,var(--accent2) 10%,transparent)}
+.help-links a:hover{background:color-mix(in srgb,var(--accent2) 20%,transparent)}
+.fv-list{flex:1;min-height:0;overflow:auto;padding:4px 0}
+.fv-row{display:flex;align-items:center;gap:10px;padding:7px 14px;cursor:pointer;font-size:13.5px}
+.fv-row:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.fv-row .fcheck{width:15px;height:15px;accent-color:var(--accent2);flex:0 0 auto;cursor:pointer}
+.fv-row .fic{width:18px;height:18px;flex:0 0 auto;fill:var(--muted)}
+.fv-row.dir .fic{fill:var(--accent)}
+.fv-row .fnm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fv-row .fsz{color:var(--muted);font-size:11.5px;font-family:ui-monospace,monospace;flex:0 0 auto;width:74px;text-align:right}
+.fv-row .fmod{color:var(--faint);font-size:11.5px;flex:0 0 auto;width:92px;text-align:right}
+.fv-row .fract-wrap{display:flex;gap:1px;flex:0 0 auto;opacity:0;transition:opacity .12s}
+.fv-row:hover .fract-wrap{opacity:1}
+@media(pointer:coarse){ .fv-row .fract-wrap{opacity:1} }
+.fract{width:26px;height:26px;display:grid;place-items:center;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:6px;font-size:13px}
+.fract:hover{background:color-mix(in srgb,var(--fg) 12%,transparent);color:var(--fg)}
+.fract.del:hover{color:var(--err)}
+.fnm-edit{flex:1;min-width:0;background:var(--bg);border:1px solid var(--accent2);border-radius:6px;color:var(--fg);font:inherit;font-size:13.5px;padding:2px 7px;outline:none}
+.fv-empty{padding:40px;text-align:center;color:var(--muted)}
+.fv-drop{position:absolute;inset:8px;z-index:20;display:none;align-items:center;justify-content:center;
+  background:color-mix(in srgb,var(--accent) 13%,transparent);border:3px dashed var(--accent2);border-radius:12px;pointer-events:none}
+.filesview.dragging .fv-drop{display:flex}
+.fv-drop .msg{font-size:16px;font-weight:600;color:var(--fg)}
+.fv-prog{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);z-index:30;width:min(440px,calc(100% - 28px));
+  background:var(--panel);border:1px solid var(--trim);border-radius:12px;padding:13px 15px;box-shadow:0 10px 30px rgba(0,0,0,.4);display:none}
+.fv-prog.show{display:block}
+.fv-prog .pt{font-size:13px;color:var(--fg);font-weight:600;display:flex;align-items:center;gap:8px}
+.fv-prog .pt .ispin{width:13px;height:13px;border:2px solid var(--trim);border-top-color:var(--accent2);border-radius:50%;animation:isp .7s linear infinite}
+.fv-prog .psub{font-size:11.5px;color:var(--muted);margin-top:5px;line-height:1.4}
+.fv-prog .pbar{height:7px;border-radius:5px;background:var(--trim);margin-top:9px;overflow:hidden}
+.fv-prog .pfill{height:100%;width:0;background:var(--accent2);border-radius:5px;transition:width .2s}
+/* quick-open tree button in the tab bar */
+.tab-tree{flex:0 0 auto;align-self:center;margin:0 4px;width:30px;height:26px;display:none;place-items:center;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:7px}
+.tab-tree:hover{background:color-mix(in srgb,var(--fg) 10%,transparent);color:var(--fg)}
+.tab-tree svg{width:16px;height:16px;fill:currentColor}
+@container (min-width:641px){ .tabs .tab-tree{display:grid} }
+@media(max-width:640px){ .fv-row .fmod{display:none} }
+
+/* ============ config modal ============ */
+.overlay{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:40;display:none;align-items:center;justify-content:center;padding:24px}
+.overlay.on{display:flex}
+.modal{width:min(680px,100%);max-height:100%;background:var(--panel);border:1px solid var(--trim);border-radius:16px;
+  display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.modal-head{display:flex;align-items:center;padding:16px 18px;border-bottom:1px solid var(--trim)}
+.modal-head .t{font-size:16px;font-weight:700;color:var(--fg);flex:1}
+.modal-head .x{width:32px;height:32px;border-radius:8px;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:18px}
+.modal-head .x:hover{background:color-mix(in srgb,var(--fg) 12%,transparent);color:var(--fg)}
+.modal-body{overflow-y:auto;overflow-x:hidden;padding:16px 18px;min-height:0}
+.cfg-sec{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:6px 0 10px}
+.theme-search{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--trim);border-radius:9px;
+  padding:8px 11px;margin-bottom:12px}
+.theme-search svg{width:15px;height:15px;fill:var(--muted)}
+.theme-search input{flex:1;border:0;background:transparent;outline:none;color:var(--fg);font-size:14px}
+.theme-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px}
+.tch{border:1px solid var(--trim);border-radius:11px;overflow:hidden;cursor:pointer;background:var(--bg);transition:border-color .12s,transform .12s}
+.tch:hover{transform:translateY(-2px)}
+.tch.on{border-color:var(--accent2);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent2) 50%,transparent)}
+.tch .prev{height:46px;padding:8px;display:flex;flex-direction:column;justify-content:space-between}
+.tch .dots{display:flex;gap:4px}
+.tch .dots i{width:9px;height:9px;border-radius:50%;display:block}
+.tch .line{height:5px;border-radius:3px;width:70%}
+.tch .nm{font-size:11.5px;padding:7px 9px;color:var(--fg);border-top:1px solid var(--trim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cfg-row{display:flex;align-items:center;gap:12px;margin:14px 0 4px;flex-wrap:wrap}
+.cfg-row .k{font-size:13px;color:var(--fg);flex:0 0 110px}
+.cfg-row input[type=range]{flex:1;min-width:120px;accent-color:var(--accent2)}
+.cfg-row .v{font-size:12px;color:var(--muted);width:46px;text-align:right;font-family:ui-monospace,monospace}
+.cfg-row .seg{flex-wrap:wrap}
+
+/* responsive (container = device) */
+/* desktop + iPad: editing view modes (editor / console / combo) + show the view toggle */
+@container (min-width:641px){
+  .tabs .viewseg{display:flex}
+  .maiden[data-edit="editor"] .repl,.maiden[data-edit="editor"] .vsplit{display:none}
+  .maiden[data-edit="editor"] .editorhost{flex:1}
+  .maiden[data-edit="console"] .editorhost,.maiden[data-edit="console"] .vsplit{display:none}
+  .maiden[data-edit="console"] .repl{flex:1 1 auto;border-top:0}
+}
+@container (max-width:640px){
+  .activity{display:none}.vsplit{display:none}.mtop{display:flex}.mtabs{display:flex}.tabs{display:none}
+  .editorhost,.repl{display:none}
+  .maiden[data-view="edit"] .editorhost{display:block}
+  .maiden[data-view="repl"] .repl{display:flex;flex:1;border-top:0}
+  #editor{font-size:max(15px,var(--efont))}
+  .repl-row{flex-wrap:wrap}.repl-target{order:2}.repl-inwrap{order:1;flex-basis:100%}.repl-send{order:3}
+  /* repo: compact header, single column, list scrolls cleanly under a fixed header */
+  .rd-grid{grid-template-columns:1fr}
+  .rd-toolbar{flex-wrap:wrap;padding:7px 12px}
+  .rd-search{flex-basis:100%;order:-1}
+  .rd-pill-btn{flex:1;justify-content:center}
+  .card .head{flex-direction:column}.act-row{width:100%}.act-row .btn{flex:1;text-align:center}
+  .theme-grid{grid-template-columns:repeat(auto-fill,minmax(108px,1fr))}
+  /* config becomes a full-screen sheet — never floats or clips */
+  .overlay{padding:0;align-items:stretch}
+  .modal{width:100%;max-width:100%;height:100%;max-height:100%;border:0;border-radius:0}
+  .cfg-row .k{flex-basis:100%}
+  .cfg-row .v{order:3}
+  /* GitHub connect: drop the button to its own row under the token field */
+  .gh-row{flex-wrap:wrap}
+  .gh-row .theme-search{flex-basis:100%}
+  .gh-row .btn{width:100%}
+  .trust-modal{align-self:stretch;height:auto;margin:auto 0}
+  .trust-actions .btn{flex:1}
+}
+</style>
+</head>
+<body>
+<div class="sim-bar">
+  <span class="title">maiden <b>·</b> interactive redesign</span>
+  <span class="seg" id="size">
+    <button data-w="390" data-h="800">📱 phone</button>
+    <button data-w="900" data-h="fill">▦ tablet</button>
+    <button data-w="9999" data-h="fill" class="on">🖥 desktop</button>
+  </span>
+  <span class="spacer"></span>
+  <span class="hint">tap the <b>⚙ gear</b> for ~26 themes · everything's editable</span>
+</div>
+
+<div class="stage">
+ <div class="device" id="device" style="--dev-w:9999px">
+  <div class="maiden" id="maiden" data-view="edit">
+   <div class="app-header"></div>
+
+   <!-- mobile top bar -->
+   <div class="mtop">
+     <button class="hbtn" id="m-menu" title="files"><svg viewBox="0 0 32 32"><path d="M14 4l4 4h14v22h-32v-26z"/></svg></button>
+     <div class="name"><span class="dot"></span><span id="m-title">awake.lua</span></div>
+     <button class="hbtn" id="m-cfg" title="config"><svg viewBox="0 0 32 32"><path d="M29.181 19.070c-1.679-2.908-.669-6.634 2.255-8.328l-3.145-5.447c-.898.527-1.943.829-3.058.829-3.361 0-6.085-2.742-6.085-6.125h-6.289c.008 1.044-.252 2.103-.811 3.070-1.679 2.908-5.411 3.897-8.339 2.211l-3.144 5.447c.905.515 1.689 1.268 2.246 2.234 1.676 2.903.672 6.623-2.241 8.319l3.145 5.447c.895-.522 1.935-.82 3.044-.82 3.35 0 6.067 2.725 6.084 6.092h6.289c-.003-1.034.259-2.080.811-3.038 1.676-2.903 5.399-3.894 8.325-2.219l3.145-5.447c-.899-.515-1.678-1.266-2.232-2.226zM16 22.479c-3.578 0-6.479-2.901-6.479-6.479s2.901-6.479 6.479-6.479c3.578 0 6.479 2.901 6.479 6.479s-2.901 6.479-6.479 6.479z"/></svg></button>
+   </div>
+
+   <div class="body">
+     <!-- activity bar -->
+     <div class="activity">
+       <button class="act on" id="a-files" title="toggle file viewer"><svg viewBox="0 0 32 32"><path d="M28.681 7.159c-.694-.947-1.662-2.053-2.724-3.116s-2.169-2.030-3.116-2.724c-1.612-1.182-2.393-1.319-2.841-1.319h-15.5c-1.378 0-2.5 1.121-2.5 2.5v27c0 1.378 1.122 2.5 2.5 2.5h23c1.378 0 2.5-1.122 2.5-2.5v-19.5c0-.448-.137-1.23-1.319-2.841zM24.543 5.457c.959.959 1.712 1.825 2.268 2.543h-4.811v-4.811c.718.556 1.584 1.309 2.543 2.268zM28 29.5c0 .271-.229.5-.5.5h-23c-.271 0-.5-.229-.5-.5v-27c0-.271.229-.5.5-.5 0 0 15.499-0 15.5 0v7c0 .552.448 1 1 1h7v19.5zM23 26h-14c-.552 0-1-.448-1-1s.448-1 1-1h14c.552 0 1 .448 1 1s-.448 1-1 1zM23 22h-14c-.552 0-1-.448-1-1s.448-1 1-1h14c.552 0 1 .448 1 1s-.448 1-1 1zM23 18h-14c-.552 0-1-.448-1-1s.448-1 1-1h14c.552 0 1 .448 1 1s-.448 1-1 1z"/></svg></button>
+       <button class="act" id="a-repl" title="toggle repl"><svg viewBox="0 0 32 32"><path d="M0 2v28h32v-28h-32zM30 28h-28v-24h28v24zM28 6h-24v20h24v-20zM14 16h-2v2h-2v2h-2v-2h2v-2h2v-2h-2v-2h-2v-2h2v2h2v2h2v2zM22 20h-6v-2h6v2z"/></svg></button>
+       <button class="act" id="a-proj" title="project / repository manager"><svg viewBox="0 0 32 32"><path d="M7 4h-6c-.55 0-1 .45-1 1v22c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-22c0-.55-.45-1-1-1zM6 10h-4v-2h4v2zM17 4h-6c-.55 0-1 .45-1 1v22c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-22c0-.55-.45-1-1-1zM16 10h-4v-2h4v2zM23.909 5.546l-5.358 2.7c-.491.247-.691.852-.443 1.343l8.999 17.861c.247.491.852.691 1.343.443l5.358-2.7c.491-.247.691-.852.443-1.343l-8.999-17.861c-.247-.491-.852-.691-1.343-.443z"/></svg></button>
+       <button class="act grow" id="a-help" title="help"><svg viewBox="0 0 32 32"><path d="M14 24h4v4h-4zM22.667 11.333c0-3.682-2.985-6.667-6.667-6.667s-6.667 2.985-6.667 6.667h4c0-1.473 1.194-2.667 2.667-2.667s2.667 1.194 2.667 2.667c0 1.473-1.146 1.871-2.319 3.044-1.115 1.115-1.681 2.292-1.681 4.623v.667h4c0-2.667.099-2.948 1.681-4.623 1.262-1.34 2.319-2.477 2.319-4.041z"/></svg></button>
+       <button class="act" id="a-cfg" title="configuration"><svg viewBox="0 0 32 32"><path d="M29.181 19.070c-1.679-2.908-.669-6.634 2.255-8.328l-3.145-5.447c-.898.527-1.943.829-3.058.829-3.361 0-6.085-2.742-6.085-6.125h-6.289c.008 1.044-.252 2.103-.811 3.070-1.679 2.908-5.411 3.897-8.339 2.211l-3.144 5.447c.905.515 1.689 1.268 2.246 2.234 1.676 2.903.672 6.623-2.241 8.319l3.145 5.447c.895-.522 1.935-.82 3.044-.82 3.35 0 6.067 2.725 6.084 6.092h6.289c-.003-1.034.259-2.080.811-3.038 1.676-2.903 5.399-3.894 8.325-2.219l3.145-5.447c-.899-.515-1.678-1.266-2.232-2.226zM16 22.479c-3.578 0-6.479-2.901-6.479-6.479s2.901-6.479 6.479-6.479c3.578 0 6.479 2.901 6.479 6.479s-2.901 6.479-6.479 6.479z"/></svg></button>
+     </div>
+
+     <!-- explorer -->
+     <div class="explorer">
+       <div class="pane-head">dust<span class="tools">
+         <svg viewBox="0 0 32 32"><path d="M16 0c-8.837 0-16 7.163-16 16s7.163 16 16 16 16-7.163 16-16-7.163-16-16-16zM24 18h-6v6h-4v-6h-6v-4h6v-6h4v6h6v4z"/></svg></span></div>
+       <div class="tree" id="tree"></div>
+     </div>
+
+     <!-- main: editor + repl -->
+     <div class="main" id="main">
+       <div class="tabs" id="tabs"></div>
+       <div class="editorhost"><div id="editor"></div></div>
+       <div class="vsplit"></div>
+       <div class="repl">
+         <div class="repl-out" id="replout"></div>
+         <div class="repl-bar">
+           <div class="ac" id="ac"></div>
+           <div class="repl-row">
+             <div class="repl-inwrap"><span class="pr">&gt;&gt;</span>
+               <input class="repl-in" id="replin" placeholder="type a command…  (try “params”, “clock”, “screen”)" autocomplete="off" spellcheck="false"></div>
+             <div class="repl-target"><span class="lbl">send&nbsp;to</span>
+               <span class="tgt" id="tgt"><button class="on" data-t="matron">matron</button><button data-t="sc">sc</button></span></div>
+             <button class="repl-send" id="replsend">send</button>
+           </div>
+         </div>
+       </div>
+     </div>
+
+     <!-- repo manager -->
+     <div class="repoview" id="repoview"></div>
+
+     <!-- first-class file manager -->
+     <div class="filesview" id="filesview"></div>
+     <input type="file" id="file-input" multiple style="display:none">
+     <input type="file" id="dir-input" webkitdirectory directory multiple style="display:none">
+
+     <!-- mobile drawer -->
+     <div class="scrim" id="scrim"></div>
+     <div class="drawer"><div class="pane-head">dust</div><div class="tree" id="tree2"></div></div>
+   </div>
+
+   <!-- mobile bottom tabs -->
+   <div class="mtabs">
+     <button class="mtab" data-mv="files"><svg viewBox="0 0 32 32"><path d="M14 4l4 4h14v22h-32v-26z"/></svg>files</button>
+     <button class="mtab on" data-mv="edit"><svg viewBox="0 0 32 32"><path d="M27 0c2.761 0 5 2.239 5 5 0 1.126-.372 2.164-1 3l-2 2-7-7 2-2c.836-.628 1.874-1 3-1zM2 23l-2 9 9-2 18.5-18.5-7-7-18.5 18.5zM22.362 11.362l-14 14-1.724-1.724 14-14 1.724 1.724z"/></svg>editor</button>
+     <button class="mtab" data-mv="repl"><svg viewBox="0 0 32 32"><path d="M0 2v28h32v-28h-32zM30 28h-28v-24h28v24zM28 6h-24v20h24v-20zM14 16h-2v2h-2v2h-2v-2h2v-2h2v-2h-2v-2h-2v-2h2v2h2v2h2v2zM22 20h-6v-2h6v2z"/></svg>repl</button>
+     <button class="mtab" data-mv="repo"><svg viewBox="0 0 32 32"><path d="M7 4h-6c-.55 0-1 .45-1 1v22c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-22c0-.55-.45-1-1-1zM23.909 5.546l-5.358 2.7c-.491.247-.691.852-.443 1.343l8.999 17.861c.247.491.852.691 1.343.443l5.358-2.7c.491-.247.691-.852.443-1.343l-8.999-17.861c-.247-.491-.852-.691-1.343-.443z"/></svg>scripts</button>
+   </div>
+
+   <!-- config modal -->
+   <div class="overlay" id="overlay">
+     <div class="modal">
+       <div class="modal-head"><div class="t">configuration</div>
+         <span id="buildstamp" style="font-size:11px;color:var(--muted);font-family:ui-monospace,monospace;margin-right:10px"></span>
+         <button class="x" id="cfg-close">✕</button></div>
+       <div class="modal-body">
+         <div class="cfg-sec">sources &amp; discovery</div>
+         <div class="gh-box" id="gh-box"></div>
+         <div class="src-list" id="src-list"></div>
+         <button class="rd-pill-btn" id="add-src" style="margin-bottom:6px">+ add source — catalog url or github search</button>
+
+         <div class="cfg-sec" style="margin-top:20px">color theme · <span id="theme-count"></span> schemes</div>
+         <div class="theme-search"><svg viewBox="0 0 32 32"><path d="M31 27l-7.6-6.4C24.4 18.9 25 16.5 25 14c0-6.6-5.4-12-12-12S1 7.4 1 14s5.4 12 12 12c2.5 0 4.9-.6 6.6-1.6L27 31c1.1 1.2 2.9 1.3 4 .2s1-2.9-.2-4zM5 14c0-4.4 3.6-8 8-8s8 3.6 8 8-3.6 8-8 8-8-3.6-8-8z"/></svg>
+           <input id="theme-filter" placeholder="filter themes — gruvbox, nord, solarized…"></div>
+         <div class="theme-grid" id="theme-grid"></div>
+         <div class="cfg-sec" style="margin-top:20px">editor</div>
+         <div class="cfg-row"><span class="k">font size</span><input type="range" id="fontsize" min="10" max="22" value="13"><span class="v" id="fontsize-v">13px</span></div>
+         <div class="cfg-row"><span class="k">tab size</span>
+           <span class="seg" id="tabsize"><button class="on" data-n="2">2</button><button data-n="4">4</button><button data-n="8">8</button></span></div>
+         <div class="cfg-row"><span class="k">key bindings</span>
+           <span class="seg" id="keymap"><button class="on" data-k="ace">default</button><button data-k="vim">vim</button><button data-k="emacs">emacs</button></span></div>
+         <div class="cfg-sec" style="margin-top:20px">files</div>
+         <div class="cfg-row"><span class="k">upload buttons</span>
+           <span class="seg" id="uploadmode"><button data-u="unified">unified</button><button data-u="split">files + folder</button></span>
+           <span class="v" style="width:auto;color:var(--faint);font-family:inherit">unified uses drag for folders; split adds a folder picker (better on touch)</span></div>
+       </div>
+     </div>
+   </div>
+
+   <!-- untrusted-source install confirmation -->
+   <div class="overlay" id="trust-overlay">
+     <div class="modal trust-modal">
+       <div class="modal-head"><div class="t">⚠ install from an untrusted source?</div></div>
+       <div class="modal-body">
+         <p class="trust-msg" id="trust-msg"></p>
+         <div class="trust-warn">norns scripts run with full access to your device. only install scripts you trust. the norns &amp; maiden maintainers do not review or vouch for third-party scripts — that responsibility is yours.</div>
+         <label class="trust-snooze"><input type="checkbox" id="trust-remember"> don't warn me again for
+           <select id="trust-weeks"><option value="1">1 week</option><option value="2">2 weeks</option><option value="3">3 weeks</option><option value="4">4 weeks</option></select>
+           <span class="trust-cap">(max 4 weeks — this reminder can be snoozed, not disabled)</span></label>
+         <div class="trust-actions">
+           <button class="btn btn-remove" id="trust-cancel">Cancel</button>
+           <button class="btn btn-install" id="trust-ok">Install anyway</button>
+         </div>
+       </div>
+     </div>
+   </div>
+
+   <!-- B2: engine-name conflict -->
+   <div class="overlay" id="eng-overlay">
+     <div class="modal trust-modal">
+       <div class="modal-head"><div class="t">⚙ engine name conflict</div></div>
+       <div class="modal-body">
+         <p class="trust-msg" id="eng-msg"></p>
+         <div class="trust-warn">SuperCollider registers each engine by class name. A duplicate makes one engine fail to load — and it's invisible until a script runs.</div>
+         <label class="eng-rename-row">install with engine renamed to
+           <input id="eng-rename" class="eng-rename-input" spellcheck="false"></label>
+         <div class="trust-actions">
+           <button class="btn btn-remove" id="eng-cancel">Cancel</button>
+           <button class="btn btn-update" id="eng-anyway">Install anyway</button>
+           <button class="btn btn-install" id="eng-rename-go">Install renamed</button>
+         </div>
+       </div>
+     </div>
+   </div>
+
+   <!-- generic confirm dialog -->
+   <div class="overlay" id="confirm-overlay">
+     <div class="modal trust-modal">
+       <div class="modal-head"><div class="t" id="confirm-title">are you sure?</div></div>
+       <div class="modal-body">
+         <p class="trust-msg" id="confirm-msg"></p>
+         <div class="trust-actions">
+           <button class="btn btn-remove" id="confirm-cancel">Cancel</button>
+           <button class="btn btn-install" id="confirm-ok">OK</button>
+         </div>
+       </div>
+     </div>
+   </div>
+
+   <!-- help -->
+   <div class="overlay" id="help-overlay">
+     <div class="modal">
+       <div class="modal-head"><div class="t">help</div><button class="x" id="help-close">✕</button></div>
+       <div class="modal-body">
+         <div class="cfg-sec">keyboard</div>
+         <div class="help-keys">
+           <div><kbd>⌘/Ctrl</kbd><kbd>S</kbd><span>save script</span></div>
+           <div><kbd>⌘/Ctrl</kbd><kbd>B</kbd><span>toggle file tree</span></div>
+           <div><kbd>⌘/Ctrl</kbd><kbd>↵</kbd><span>run a REPL line</span></div>
+           <div><kbd>Tab</kbd><span>accept autocomplete</span></div>
+         </div>
+         <div class="cfg-sec" style="margin-top:18px">documentation</div>
+         <div class="help-links">
+           <a href="https://monome.org/docs/norns/" target="_blank" rel="noopener">norns docs ↗</a>
+           <a href="https://monome.org/docs/norns/studies/" target="_blank" rel="noopener">lua studies ↗</a>
+           <a href="https://norns.community/" target="_blank" rel="noopener">norns.community ↗</a>
+           <a href="https://llllllll.co/" target="_blank" rel="noopener">lines forum ↗</a>
+           <a href="https://github.com/monome/maiden" target="_blank" rel="noopener">maiden ↗</a>
+         </div>
+         <div class="cfg-sec" style="margin-top:18px">about</div>
+         <p style="font-size:13px;color:var(--muted);line-height:1.5;margin:0">maiden is the web editor for norns — write Lua in the editor, run it from the REPL, manage files, and install scripts from the library. <span id="help-build" class="mono" style="color:var(--faint)"></span></p>
+       </div>
+     </div>
+   </div>
+
+   <!-- install status dock -->
+   <div class="install-dock" id="install-dock"></div>
+  </div>
+ </div>
+</div>
+
+<script>
+const BUILD='b18 · 2026-06-03 · B2 deconfliction + B3 mcp + split-upload option';
+console.log('%cmaiden redesign build: '+BUILD,'color:#DEB887;font-weight:bold');
+const LS={
+  get(k,d){try{const v=localStorage.getItem('maiden.'+k);return v==null?d:JSON.parse(v);}catch(e){return d;}},
+  set(k,v){try{localStorage.setItem('maiden.'+k,JSON.stringify(v));}catch(e){}}
+};
+/* ============ THEMES (chrome palette + ace theme) ============ */
+const THEMES=[
+ {n:'maiden dark',ace:'tomorrow_night',bg:'#1D1F21',p:'#25282C',p2:'#1F2123',tr:'#333333',fg:'#C5C8C6',mu:'#969896',fa:'#5a5f63',a1:'#DEB887',a2:'#CC9999',ok:'#8aa872',er:'#c06a45'},
+ {n:'gruvbox dark',ace:'gruvbox',bg:'#282828',p:'#32302f',p2:'#3c3836',tr:'#504945',fg:'#ebdbb2',mu:'#a89984',fa:'#665c54',a1:'#fabd2f',a2:'#fe8019',ok:'#b8bb26',er:'#fb4934'},
+ {n:'dracula',ace:'dracula',bg:'#282a36',p:'#2f3142',p2:'#343746',tr:'#44475a',fg:'#f8f8f2',mu:'#a5a7b4',fa:'#6272a4',a1:'#bd93f9',a2:'#ff79c6',ok:'#50fa7b',er:'#ff5555'},
+ {n:'nord',ace:'nord_dark',bg:'#2e3440',p:'#3b4252',p2:'#434c5e',tr:'#4c566a',fg:'#eceff4',mu:'#a8b1c2',fa:'#616e88',a1:'#88c0d0',a2:'#81a1c1',ok:'#a3be8c',er:'#bf616a'},
+ {n:'solarized dark',ace:'solarized_dark',bg:'#002b36',p:'#073642',p2:'#0a3f4c',tr:'#0f4d5a',fg:'#93a1a1',mu:'#839496',fa:'#586e75',a1:'#b58900',a2:'#268bd2',ok:'#859900',er:'#dc322f'},
+ {n:'one dark',ace:'one_dark',bg:'#282c34',p:'#2f343d',p2:'#353b45',tr:'#3e4451',fg:'#abb2bf',mu:'#828997',fa:'#545862',a1:'#61afef',a2:'#c678dd',ok:'#98c379',er:'#e06c75'},
+ {n:'monokai',ace:'monokai',bg:'#272822',p:'#2f302a',p2:'#34352d',tr:'#49483e',fg:'#f8f8f2',mu:'#a6a28c',fa:'#75715e',a1:'#a6e22e',a2:'#fd971f',ok:'#a6e22e',er:'#f92672'},
+ {n:'tomorrow night 80s',ace:'tomorrow_night_eighties',bg:'#2d2d2d',p:'#333333',p2:'#393939',tr:'#515151',fg:'#cccccc',mu:'#999999',fa:'#666666',a1:'#ffcc66',a2:'#cc99cc',ok:'#99cc99',er:'#f2777a'},
+ {n:'cobalt',ace:'cobalt',bg:'#002240',p:'#00305a',p2:'#003a6b',tr:'#13507a',fg:'#ffffff',mu:'#a9c0d6',fa:'#3b6aa0',a1:'#ffc600',a2:'#ff9d00',ok:'#3ad900',er:'#ff2600'},
+ {n:'twilight',ace:'twilight',bg:'#141414',p:'#1e1e1e',p2:'#262626',tr:'#333333',fg:'#f7f7f7',mu:'#a7a7a7',fa:'#5f5a60',a1:'#cf6a4c',a2:'#9b859d',ok:'#8f9d6a',er:'#cf6a4c'},
+ {n:'pastel on dark',ace:'pastel_on_dark',bg:'#2c2828',p:'#353130',p2:'#3a3635',tr:'#4a4544',fg:'#dccf8f',mu:'#a59f86',fa:'#6e6b5e',a1:'#a4c5a4',a2:'#c0b18b',ok:'#a4c5a4',er:'#cf6a4c'},
+ {n:'terminal',ace:'terminal',bg:'#000000',p:'#0e0e0e',p2:'#161616',tr:'#2a2a2a',fg:'#dcdccc',mu:'#9a9a9a',fa:'#5a5a5a',a1:'#33ff33',a2:'#ffff66',ok:'#33ff33',er:'#ff5050'},
+ {n:'merbivore',ace:'merbivore',bg:'#161616',p:'#1f1f1f',p2:'#262626',tr:'#333333',fg:'#e6e1c4',mu:'#a8a48a',fa:'#666666',a1:'#fc6f09',a2:'#8dff0a',ok:'#8dff0a',er:'#ff3030'},
+ {n:'idle fingers',ace:'idle_fingers',bg:'#323232',p:'#3a3a3a',p2:'#404040',tr:'#4f4f4f',fg:'#ffffff',mu:'#b0b0b0',fa:'#6c6c66',a1:'#cc7833',a2:'#6699cc',ok:'#a5c261',er:'#cc7833'},
+ {n:'github dark',ace:'github_dark',bg:'#0d1117',p:'#161b22',p2:'#1c2128',tr:'#30363d',fg:'#c9d1d9',mu:'#8b949e',fa:'#484f58',a1:'#58a6ff',a2:'#bc8cff',ok:'#3fb950',er:'#f85149'},
+ {n:'chaos',ace:'chaos',bg:'#161616',p:'#1e1e1e',p2:'#242424',tr:'#333333',fg:'#e1e1e1',mu:'#999999',fa:'#5a5a5a',a1:'#00aa9a',a2:'#e7977f',ok:'#a3d4a3',er:'#ff5050'},
+ {n:'maiden light',ace:'tomorrow',bg:'#F4F4F4',p:'#f7f7f7',p2:'#eef0ef',tr:'#DADADA',fg:'#434351',mu:'#757575',fa:'#AFAFAF',a1:'#b5803a',a2:'#a06b6b',ok:'#5a8a55',er:'#975031'},
+ {n:'solarized light',ace:'solarized_light',bg:'#fdf6e3',p:'#f5eed4',p2:'#eee8d5',tr:'#ddd6c1',fg:'#586e75',mu:'#657b83',fa:'#93a1a1',a1:'#b58900',a2:'#268bd2',ok:'#859900',er:'#dc322f'},
+ {n:'github light',ace:'github',bg:'#ffffff',p:'#f6f8fa',p2:'#eaeef2',tr:'#d0d7de',fg:'#24292f',mu:'#57606a',fa:'#8c959f',a1:'#0969da',a2:'#8250df',ok:'#1a7f37',er:'#cf222e'},
+ {n:'gruvbox light',ace:'gruvbox_light_hard',bg:'#f9f5d7',p:'#f2ead2',p2:'#ebdbb2',tr:'#d5c4a1',fg:'#3c3836',mu:'#7c6f64',fa:'#a89984',a1:'#b57614',a2:'#076678',ok:'#79740e',er:'#9d0006'},
+ {n:'xcode',ace:'xcode',bg:'#ffffff',p:'#f7f7f7',p2:'#eef0f3',tr:'#dcdcdc',fg:'#1a1a1a',mu:'#5c6370',fa:'#a0a0a0',a1:'#1c00cf',a2:'#c41a16',ok:'#007400',er:'#c41a16'},
+ {n:'eclipse',ace:'eclipse',bg:'#ffffff',p:'#f5f5f5',p2:'#eceff3',tr:'#dcdcdc',fg:'#1a1a1a',mu:'#5b6370',fa:'#a0a0a0',a1:'#7f0055',a2:'#2a00ff',ok:'#3c8a2e',er:'#c41a16'},
+ {n:'dawn',ace:'dawn',bg:'#f9f9f9',p:'#f2f2f2',p2:'#ececec',tr:'#d6d6d6',fg:'#141414',mu:'#5c6773',fa:'#a3a6ad',a1:'#794938',a2:'#385e6b',ok:'#4f7f4f',er:'#a8334c'},
+ {n:'clouds',ace:'clouds',bg:'#ffffff',p:'#f6f6f6',p2:'#ededed',tr:'#dcdcdc',fg:'#1a1a1a',mu:'#5c6370',fa:'#a6a6a6',a1:'#a35a00',a2:'#00547a',ok:'#487820',er:'#bf2200'},
+ {n:'katzenmilch',ace:'katzenmilch',bg:'#f7f7f7',p:'#efeff2',p2:'#e7e7ee',tr:'#d6d6dd',fg:'#293c4b',mu:'#5a6b78',fa:'#9aa3ab',a1:'#7e5ce0',a2:'#b400b4',ok:'#2c8a3e',er:'#d6336c'},
+ {n:'chrome',ace:'chrome',bg:'#ffffff',p:'#f6f6f6',p2:'#ededed',tr:'#dadada',fg:'#222222',mu:'#5c6370',fa:'#a6a6a6',a1:'#0a7700',a2:'#1a1aa6',ok:'#0a7700',er:'#bf2200'},
+ {n:'catppuccin mocha',bg:'#1e1e2e',p:'#24273a',p2:'#181825',tr:'#313244',fg:'#cdd6f4',mu:'#a6adc8',fa:'#6c7086',a1:'#cba6f7',a2:'#f5c2e7',ok:'#a6e3a1',er:'#f38ba8'},
+ {n:'catppuccin macchiato',bg:'#24273a',p:'#2a2d44',p2:'#1e2030',tr:'#363a4f',fg:'#cad3f5',mu:'#a5adcb',fa:'#6e738d',a1:'#c6a0f6',a2:'#f5bde6',ok:'#a6da95',er:'#ed8796'},
+ {n:'catppuccin frappé',bg:'#303446',p:'#363a4e',p2:'#292c3c',tr:'#414559',fg:'#c6d0f5',mu:'#a5adce',fa:'#737994',a1:'#ca9ee6',a2:'#f4b8e4',ok:'#a6d189',er:'#e78284'},
+ {n:'catppuccin latte',bg:'#eff1f5',p:'#e6e9ef',p2:'#dce0e8',tr:'#ccd0da',fg:'#4c4f69',mu:'#6c6f85',fa:'#9ca0b0',a1:'#8839ef',a2:'#ea76cb',ok:'#40a02b',er:'#d20f39'},
+ {n:'rosé pine',bg:'#191724',p:'#1f1d2e',p2:'#26233a',tr:'#403d52',fg:'#e0def4',mu:'#908caa',fa:'#6e6a86',a1:'#c4a7e7',a2:'#ebbcba',ok:'#9ccfd8',er:'#eb6f92'},
+ {n:'rosé pine moon',bg:'#232136',p:'#2a273f',p2:'#393552',tr:'#44415a',fg:'#e0def4',mu:'#908caa',fa:'#6e6a86',a1:'#c4a7e7',a2:'#ea9a97',ok:'#9ccfd8',er:'#eb6f92'},
+ {n:'rosé pine dawn',bg:'#faf4ed',p:'#fffaf3',p2:'#f2e9e1',tr:'#dfdad9',fg:'#575279',mu:'#797593',fa:'#9893a5',a1:'#907aa9',a2:'#d7827e',ok:'#56949f',er:'#b4637a'},
+ {n:'tokyo night',bg:'#1a1b26',p:'#1f2335',p2:'#16161e',tr:'#292e42',fg:'#c0caf5',mu:'#9aa5ce',fa:'#565f89',a1:'#7aa2f7',a2:'#bb9af7',ok:'#9ece6a',er:'#f7768e'},
+ {n:'tokyo night storm',bg:'#24283b',p:'#2a2e42',p2:'#1f2335',tr:'#3b4261',fg:'#c0caf5',mu:'#9aa5ce',fa:'#565f89',a1:'#7aa2f7',a2:'#bb9af7',ok:'#9ece6a',er:'#f7768e'},
+ {n:'everforest dark',bg:'#2d353b',p:'#343f44',p2:'#272e33',tr:'#475258',fg:'#d3c6aa',mu:'#9da9a0',fa:'#859289',a1:'#a7c080',a2:'#e69875',ok:'#83c092',er:'#e67e80'},
+ {n:'everforest light',bg:'#fdf6e3',p:'#f4f0d9',p2:'#efebd4',tr:'#e0dcc7',fg:'#5c6a72',mu:'#829181',fa:'#939f91',a1:'#8da101',a2:'#f57d26',ok:'#35a77c',er:'#f85552'},
+ {n:'kanagawa',bg:'#1f1f28',p:'#2a2a37',p2:'#16161d',tr:'#363646',fg:'#dcd7ba',mu:'#a6a39a',fa:'#727169',a1:'#957fb8',a2:'#7e9cd8',ok:'#98bb6c',er:'#c34043'},
+ {n:'ayu mirage',bg:'#1f2430',p:'#232834',p2:'#1a1f29',tr:'#343b49',fg:'#cbccc6',mu:'#8a9199',fa:'#5c6773',a1:'#ffcc66',a2:'#73d0ff',ok:'#bae67e',er:'#ff6666'},
+ {n:'ayu dark',bg:'#0b0e14',p:'#0f131a',p2:'#0d1017',tr:'#1d212a',fg:'#bfbdb6',mu:'#8a9199',fa:'#565b66',a1:'#ffb454',a2:'#59c2ff',ok:'#aad94c',er:'#f26d78'},
+ {n:'gruvbox material',bg:'#282828',p:'#32302f',p2:'#1d2021',tr:'#45403d',fg:'#d4be98',mu:'#a89984',fa:'#7c6f64',a1:'#d8a657',a2:'#e78a4e',ok:'#a9b665',er:'#ea6962'},
+];
+
+/* ============ data ============ */
+const FILES={
+  'awake/awake.lua':`-- awake\n-- grid pattern + polyperc\n--\n-- E1 tempo\n-- E2 spread\n-- E3 detune\n\nengine.name = "PolyPerc"\n\nlocal music = require "musicutil"\nlocal hs = require "halfsecond"\nlocal playing = true\n\nfunction init()\n  hs.init()\n  params:add_separator("awake")\n  params:add_control("spread", "spread",\n    controlspec.new(0, 1, "lin", 0, 0.5))\n  params:add_control("detune", "detune",\n    controlspec.new(0, 1, "lin", 0, 0.0))\n  clock.run(step)\nend\n\nfunction step()\n  while true do\n    clock.sync(1/4)\n    if playing then\n      engine.hz(note())\n    end\n  end\nend\n\nfunction note()\n  local n = 60 + math.random(-12, 12)\n  return music.note_num_to_freq(n)\nend\n\nfunction redraw()\n  screen.clear()\n  screen.level(15)\n  screen.move(64, 32)\n  screen.text_center("awake")\n  screen.update()\nend`,
+  'awake/engine/PolyPerc.sc':`// PolyPerc — a simple polyphonic percussive synth\nEngine_PolyPerc : CroneEngine {\n  var pg;\n  *new { arg context, doneCallback;\n    ^super.new(context, doneCallback);\n  }\n  alloc {\n    pg = ParGroup.tail(context.xg);\n    SynthDef("PolyPerc", {\n      arg out, freq=440, pw=0.5, amp=0.3, cutoff=1200, gain=2;\n      var snd = Pulse.ar(freq, pw);\n      snd = RLPF.ar(snd, cutoff, gain.reciprocal);\n      snd = snd * EnvGen.ar(Env.perc, doneAction:2);\n      Out.ar(out, Pan2.ar(snd, 0, amp));\n    }).add;\n  }\n}`,
+  'cheat_codes_2/cheat_codes_2.lua':`-- cheat codes 2\n-- tactile sampling\n--\n-- a tool for performative\n-- sampling and pattern\n-- recording.\n\nengine.name = "Glut"\n\nfunction init()\n  print("cheat codes 2 loaded")\nend`,
+  'mlr/mlr.lua':`-- mlr\n-- the original\n\nfunction init()\n  print("mlr")\nend`,
+};
+const TREE=[
+  {n:'awake',dir:1,open:1,kids:[
+    {n:'awake.lua',f:'awake/awake.lua'},
+    {n:'engine',dir:1,kids:[{n:'PolyPerc.sc',f:'awake/engine/PolyPerc.sc'}]},
+  ]},
+  {n:'cheat_codes_2',dir:1,kids:[{n:'cheat_codes_2.lua',f:'cheat_codes_2/cheat_codes_2.lua'}]},
+  {n:'less_concepts',dir:1,kids:[{n:'less_concepts.lua',f:'mlr/mlr.lua'}]},
+  {n:'mlr',dir:1,kids:[{n:'mlr.lua',f:'mlr/mlr.lua'}]},
+  {n:'oooooo',dir:1,kids:[{n:'oooooo.lua',f:'mlr/mlr.lua'}]},
+  {n:'takt',dir:1,kids:[{n:'takt.lua',f:'mlr/mlr.lua'}]},
+];
+const FUNCS=[
+ ['engine.hz','(hz)','set synth pitch'],['engine.amp','(level)','set amplitude'],
+ ['params:get','(id)','read a parameter'],['params:set','(id, v)','set a parameter'],
+ ['params:add_control','(id, name, spec)','add a control'],['params:add_number','(id, name, min, max)','add a number'],
+ ['params:bang','()','fire all param actions'],['clock.run','(fn)','start a clock coroutine'],
+ ['clock.sync','(beat)','sync to a beat division'],['clock.sleep','(sec)','sleep seconds'],
+ ['clock.tempo','','current tempo'],['screen.clear','()','clear screen buffer'],
+ ['screen.move','(x, y)','move draw cursor'],['screen.text','(str)','draw text'],
+ ['screen.level','(0-15)','set brightness'],['screen.update','()','flush to display'],
+ ['redraw','()','request screen redraw'],['grid.connect','(n)','connect a grid'],
+ ['midi.connect','(n)','connect a midi device'],['metro.init','(fn, t, n)','create a metro'],
+ ['softcut.buffer_read_mono','(file)','load sample to softcut'],['audio.level_cut','(lvl)','softcut output level'],
+ ['controlspec.new','(min,max,warp,step,def)','define a control spec'],['util.linlin','(a,b,c,d,v)','linear map'],
+ ['util.clamp','(n, lo, hi)','clamp a number'],['musicutil.note_num_to_name','(n)','midi note → name'],
+ ['norns.script.load','(name)','load a script'],['tab.print','(t)','print a table'],['osc.send','(to, path, args)','send OSC'],
+];
+
+/* ============ icons ============ */
+const I={
+ dir:'M14 4l4 4h14v22h-32v-26z',
+ lua:'M28.681 7.159c-.694-.947-1.662-2.053-2.724-3.116s-2.169-2.030-3.116-2.724c-1.612-1.182-2.393-1.319-2.841-1.319h-15.5c-1.378 0-2.5 1.121-2.5 2.5v27c0 1.378 1.122 2.5 2.5 2.5h23c1.378 0 2.5-1.122 2.5-2.5v-19.5c0-.448-.137-1.23-1.319-2.841zM24.543 5.457c.959.959 1.712 1.825 2.268 2.543h-4.811v-4.811c.718.556 1.584 1.309 2.543 2.268z',
+ refresh:'M27.802 5.197c-2.925-3.194-7.13-5.197-11.802-5.197-8.837 0-16 7.163-16 16h3c0-7.18 5.82-13 13-13 3.844 0 7.298 1.669 9.678 4.322l-4.678 4.678h11v-11l-4.198 4.197zM29 16c0 7.18-5.82 13-13 13-3.844 0-7.298-1.669-9.678-4.322l4.678-4.678h-11v11l4.198-4.197c2.925 3.194 7.13 5.197 11.802 5.197 8.837 0 16-7.163 16-16h-3z',
+ search:'M31 27l-7.6-6.4C24.4 18.9 25 16.5 25 14c0-6.6-5.4-12-12-12S1 7.4 1 14s5.4 12 12 12c2.5 0 4.9-.6 6.6-1.6L27 31c1.1 1.2 2.9 1.3 4 .2s1-2.9-.2-4zM5 14c0-4.4 3.6-8 8-8s8 3.6 8 8-3.6 8-8 8-8-3.6-8-8z',
+ book:'M28 4v26h-21c-1.657 0-3-1.343-3-3s1.343-3 3-3h19v-24h-20c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h24v-28h-2z',
+ chat:'M16 2c-8.837 0-16 5.82-16 13 0 3.872 2.097 7.348 5.417 9.738-0.628 2.376-2.272 4.402-2.295 4.426-0.241 0.262-0.301 0.643-0.158 0.969s0.476 0.541 0.836 0.541c3.155 0 5.756-1.061 7.583-2.165 1.482 0.413 3.060 0.633 4.617 0.633 8.837 0 16-5.82 16-13s-7.163-13-16-13z',
+ check:'M27 4l-15 15-7-7-5 5 12 12 20-20z',
+};
+const GHUSER='you';
+const SRC={
+ community:{name:'community',color:'#DEB887',type:'maiden catalog',builtin:1},
+ kalium:{name:'example-list',color:'#c678dd',type:'custom catalog (demo placeholder)'},
+ mine:{name:'@'+GHUSER,color:'#7fbfff',type:'your github repos',auth:1},
+ github:{name:'github',color:'#7ee787',type:'github search',auth:1},
+};
+const SRC_ORDER=['community','kalium','mine','github'];
+let SRC_ON={community:1,kalium:1,mine:1,github:1};   // enabled in config
+let srcFilter=new Set(SRC_ORDER);                    // visible in toolbar filter
+let ghConnected=false;
+const REPO={
+ installed:[
+  {n:'awake',a:'tehn',d:'a sketch — grid sequencer with sample playback and a polyphonic synth voice.',v:'1.2.0',tags:['sequencer','grid'],doc:1,disc:1,srcs:['community']},
+  {n:'cheat codes 2',a:'dan derks',d:'a tool for tactile, performative sampling. multi-page slicing and pattern recording.',v:'2.0.4',tags:['sampler','grid','arc'],doc:1,disc:1,srcs:['community']},
+  {n:'oooooo',a:'infinite digits',d:'six-voice digital tape loops with adjustable speed, pan and feedback per voice.',v:'1.3.0',tags:['looper'],doc:1,disc:1,srcs:['community']},
+ ],
+ available:[
+  {n:'mlr',a:'tehn',d:'the original monome live-remix instrument. cut and re-trigger samples across the grid.',v:'3.1.0',tags:['sampler','grid'],doc:1,disc:1,srcs:['community']},
+  {n:'takt',a:'jah',d:'a step sequencer with parameter locks, micro-timing and probability per trig.',v:'0.9.2',tags:['sequencer'],doc:1,disc:1,srcs:['community']},
+  {n:'less concepts',a:'tyler etters',d:'a generative drone machine for ambient drift and slow evolving textures.',v:'1.0.0',tags:['generative','drone'],disc:1,srcs:['community']},
+  {n:'arcologies',a:'rylee a. lyman',d:'a living instrument for the monome arc — eno-esque generative ecosystems.',v:'1.1.1',tags:['generative','arc'],doc:1,disc:1,srcs:['community','kalium']},
+  {n:'pools',a:'kyle smith',d:'a probabilistic sequencer of interconnected pools of notes that feed one another.',v:'0.4.0',tags:['sequencer','generative'],disc:1,srcs:['community']},
+  {n:'oooooo',a:'infinite digits',d:'six-voice digital tape loops with adjustable speed, pan and feedback per voice.',v:'1.3.0',tags:['looper'],doc:1,disc:1,inst:1,srcs:['community']},
+  {n:'pianoteq',a:'jordan besek',d:'physical-modelling piano engine wrapper with velocity and pedal handling.',v:'0.2.0',tags:['synth'],srcs:['kalium']},
+  {n:'nisp',a:'spd',d:'a tiny lisp on norns — livecode patterns and synthesis from the repl.',v:'0.3.1',tags:['livecode','utility'],doc:1,disc:1,srcs:['community','kalium']},
+  {n:'cyrene',a:'jah',d:'a drum sequencer based on the mutable instruments grids algorithm.',v:'1.2.0',tags:['sequencer','drums'],doc:1,disc:1,srcs:['community']},
+  {n:'pamps',a:'tehn',d:'a tiny clocked modulation utility — like pamela’s, on norns.',v:'1.0.0',tags:['utility','clock'],disc:1,srcs:['community']},
+  {n:'nb',a:'sixolet',d:'a note-routing standard — swap any script’s voice for any nb-compatible player.',v:'0.5.0',tags:['nb','utility'],doc:1,disc:1,srcs:['community']},
+  {n:'nb_ack',a:'sixolet',d:'an nb voice: the ack drum sampler engine, playable from any nb host.',v:'0.2.0',tags:['nb','sampler'],disc:1,srcs:['community']},
+  {n:'nb_polyperc',a:'sixolet',d:'an nb voice wrapping the classic polyperc synth engine.',v:'0.2.0',tags:['nb','synth'],disc:1,srcs:['community']},
+  {n:'nb_passersby',a:'sixolet',d:'an nb voice: mark eats’ passersby west-coast synth, as a player.',v:'0.1.0',tags:['nb','synth'],disc:1,srcs:['community']},
+  {n:'kria',a:'tehn',d:'a port of the monome kria sequencer — loopable per-parameter step patterns.',v:'2.1.0',tags:['sequencer','grid'],doc:1,disc:1,srcs:['community']},
+  {n:'fugu',a:'okyeron',d:'a midi/osc lfo and modulation toolbox for routing to params.',v:'1.1.0',tags:['utility','midi'],disc:1,srcs:['community']},
+  // surfaced only when GitHub is connected:
+  {n:'my_sequencer',a:GHUSER,d:'a personal step sequencer i’m hacking on — work in progress.',v:'0.1.0',tags:['sequencer','wip'],srcs:['mine'],gh:1,stars:1},
+  {n:'norns-sketches',a:GHUSER,d:'private scratchpad of half-finished ideas and engine tests.',v:'dev',tags:['utility'],srcs:['mine'],gh:1,priv:1},
+ ],
+ discover:[
+  {n:'norns-studies',a:'monome',d:'official norns lua studies and example scripts.',v:'',tags:['example'],srcs:['github','community'],stars:412,gh:1,doc:1},
+  {n:'n.kria',a:'jaseknco',d:'a port of the kria step sequencer to norns + grid.',v:'',tags:['sequencer','grid'],srcs:['github'],stars:96,gh:1,disc:1},
+  {n:'dronecaster',a:'sixolet',d:'layered drone synthesis with savable “casts”.',v:'',tags:['drone','generative'],srcs:['github'],stars:54,gh:1,disc:1},
+  {n:'pearll',a:GHUSER,d:'your fork of a probabilistic looper — 2 commits ahead of upstream.',v:'',tags:['looper'],srcs:['github','mine'],stars:3,gh:1},
+  {n:'orca',a:'frank-ill',d:'esoteric livecoding sequencer ported to norns.',v:'',tags:['livecode'],srcs:['github'],stars:171,gh:1,disc:1},
+  {n:'nisp',a:'spd',d:'a tiny lisp on norns — livecode from the repl.',v:'',tags:['livecode'],srcs:['github','community'],stars:31,gh:1},
+ ],
+};
+
+/* ============ load the real community catalog (350 scripts) ============ */
+async function loadCatalog(){
+  try{
+    const r=await fetch('community.json',{cache:'no-store'}); if(!r.ok) throw new Error(r.status);
+    const j=await r.json();
+    const entries=(j.entries||[]).map(e=>({
+      n:e.project_name, a:e.author||'unknown', d:e.description||'',
+      v:'', tags:(e.tags||[]).slice(0,5), doc:e.documentation_url?1:0, disc:e.discussion_url?1:0,
+      proj:e.project_url, docU:e.documentation_url, discU:e.discussion_url, srcs:['community']
+    }));
+    entries.forEach((e,i)=>{ if(i%41===0 && e.srcs[0]==='community') e.srcs=['community','kalium']; }); // a few mirrored in a custom catalog
+    // enrich with demo videos / last-updated / community page from the nornslist scraper
+    try{
+      const ex=await (await fetch('enriched.json',{cache:'no-store'})).json();
+      entries.forEach(e=>{ const x=ex[e.n.toLowerCase()]; if(x){ e.demo=x.demo; e.upd=x.upd; e.comm=x.comm;
+        e.proj=e.proj||x.proj; e.docU=e.docU||x.doc; e.discU=e.discU||x.disc; } });
+    }catch(_){}
+    // keep the mocked non-community entries (your github repos + pure custom-catalog items) so the trust gate is demonstrable
+    const KEEP=REPO.available.filter(p=>p.srcs.includes('mine')||(p.srcs.includes('kalium')&&!p.srcs.includes('community')));
+    REPO.available = entries.concat(KEEP);
+    REPO.installed = entries.slice(0,5).map((e,i)=>({...e,inst:1,upd_avail:i<2}));  // first few installed; 2 have updates
+    if(document.getElementById('repoview').classList.contains('on')) renderRepo();
+  }catch(err){ console.warn('catalog load failed — using built-in fallback list', err); }
+}
+
+/* ============ theme engine ============ */
+let editor=null, curTheme=0, userPickedTheme=false;
+function isDark(hex){ // luminance test for the editor's isDark flag
+  const c=hex.replace('#',''); const r=parseInt(c.substr(0,2),16),g=parseInt(c.substr(2,2),16),b=parseInt(c.substr(4,2),16);
+  return (0.299*r+0.587*g+0.114*b) < 128;
+}
+// Generate an Ace editor theme straight from the palette — so ANY scheme
+// (catppuccin, rosé pine, …) colors the editor, not just ace's bundled list.
+function setEditorTheme(i,t){
+  if(!editor||!editor.renderer) return;
+  const cls='ace-dyn-'+i;
+  if(!document.getElementById('sty-'+cls)){
+    const css=`
+.${cls} .ace_gutter{background:${t.p2};color:${t.fa}}
+.${cls} .ace_print-margin{display:none}
+.${cls} .ace_scroller,.${cls}.ace_editor{background:${t.p};color:${t.fg}}
+.${cls} .ace_cursor{color:${t.a2}}
+.${cls} .ace_marker-layer .ace_selection{background:color-mix(in srgb,${t.a2} 32%,transparent)}
+.${cls} .ace_marker-layer .ace_active-line{background:color-mix(in srgb,${t.fg} 6%,transparent)}
+.${cls} .ace_gutter-active-line{background:color-mix(in srgb,${t.fg} 9%,transparent);color:${t.fg}}
+.${cls} .ace_keyword,.${cls} .ace_meta{color:${t.a1}}
+.${cls} .ace_string{color:${t.ok}}
+.${cls} .ace_comment{color:${t.fa};font-style:italic}
+.${cls} .ace_constant.ace_numeric,.${cls} .ace_constant.ace_boolean{color:${t.a2}}
+.${cls} .ace_constant.ace_language,.${cls} .ace_storage{color:${t.a1}}
+.${cls} .ace_support.ace_function,.${cls} .ace_entity.ace_name.ace_function{color:${t.a2}}
+.${cls} .ace_paren,.${cls} .ace_keyword.ace_operator,.${cls} .ace_punctuation{color:${t.mu}}
+.${cls} .ace_identifier,.${cls} .ace_variable{color:${t.fg}}
+.${cls} .ace_invalid{color:${t.er}}`;
+    const s=document.createElement('style'); s.id='sty-'+cls; s.textContent=css; document.head.appendChild(s);
+  }
+  const c=editor.container;
+  c.className=c.className.replace(/\bace-[a-z0-9_-]+\b/gi,'').replace(/\bace_dark\b/g,'').replace(/\s+/g,' ').trim();
+  c.classList.add(cls); if(isDark(t.bg)) c.classList.add('ace_dark');
+  editor.renderer.updateFull();
+}
+function applyTheme(i){
+  curTheme=i; const t=THEMES[i]; const r=document.documentElement.style;
+  r.setProperty('--bg',t.bg);r.setProperty('--panel',t.p);r.setProperty('--panel2',t.p2);r.setProperty('--trim',t.tr);
+  r.setProperty('--fg',t.fg);r.setProperty('--muted',t.mu);r.setProperty('--faint',t.fa);
+  r.setProperty('--accent',t.a1);r.setProperty('--accent2',t.a2);r.setProperty('--ok',t.ok);r.setProperty('--err',t.er);
+  document.getElementById('metaTheme').setAttribute('content',t.bg);
+  setEditorTheme(i,t);
+  document.querySelectorAll('.tch').forEach((c,idx)=>c.classList.toggle('on',idx===i));
+  if(userPickedTheme) LS.set('theme',t.n);
+}
+function themeIndexByName(n){ return Math.max(0,THEMES.findIndex(t=>t.n===n)); }
+
+/* ============ tree ============ */
+function treeHTML(nodes,depth){
+  return nodes.map(nd=>{
+    const pad=12+depth*16;
+    if(nd.dir){
+      const tw=`<span class="tw">▶</span>`;
+      const ic=`<svg class="ic" viewBox="0 0 32 32"><path d="${I.dir}"/></svg>`;
+      const kids=`<div class="kids" ${nd.open?'':'style="display:none"'}>${treeHTML(nd.kids,depth+1)}</div>`;
+      return `<div class="row dir ${nd.open?'open':''}" style="padding-left:${pad}px" data-dir="1">${tw}${ic}<span class="nm">${nd.n}</span></div>${kids}`;
+    }
+    const ic=`<svg class="ic" viewBox="0 0 32 32"><path d="${I.lua}"/></svg>`;
+    return `<div class="row" style="padding-left:${pad+10}px" data-file="${nd.f}"><span class="tw"></span>${ic}<span class="nm">${nd.n}</span></div>`;
+  }).join('');
+}
+function wireTree(el){
+  el.innerHTML=treeHTML(TREE,0);
+  el.querySelectorAll('.row').forEach(row=>{
+    row.onclick=e=>{
+      e.stopPropagation();
+      if(row.dataset.dir){
+        const kids=row.nextElementSibling;
+        const show=kids.style.display==='none';
+        kids.style.display=show?'':'none'; row.classList.toggle('open',show);
+      } else {
+        openFile(row.dataset.file);
+        document.getElementById('maiden').classList.remove('drawer-open');
+        el.querySelectorAll('.row').forEach(r=>r.classList.remove('sel'));
+        row.classList.add('sel');
+      }
+    };
+  });
+}
+
+/* ============ editor / tabs ============ */
+let openTabs=[]; let activeFile=null;
+function fileName(p){return p.split('/').pop();}
+function openFile(path){
+  if(!openTabs.includes(path)) openTabs.push(path);
+  activeFile=path;
+  if(editor){ editor.session.setMode(path.endsWith('.sc')?'ace/mode/lua':'ace/mode/lua'); editor.setValue(FILES[path]||'',-1); }
+  else { const fb=document.getElementById('fallback'); if(fb) fb.value=FILES[path]||''; }
+  document.getElementById('m-title').textContent=fileName(path);
+  renderTabs();
+}
+function renderTabs(){
+  const tabsHTML=openTabs.map(p=>
+    `<button class="tab ${p===activeFile?'on':''} ${p===activeFile?'dirty':''}" data-tab="${p}"><span class="dot"></span>${fileName(p)}</button>`
+  ).join('');
+  const treeBtn=`<button class="tab-tree" id="tab-tree" title="quick-open file tree"><svg viewBox="0 0 32 32"><path d="${I.dir}"/></svg></button>`;
+  const viewseg=`<span class="viewseg">
+    <button data-ev="editor">editor</button><button data-ev="combo">split</button><button data-ev="console">console</button></span>`;
+  document.getElementById('tabs').innerHTML=tabsHTML+treeBtn+viewseg;
+  document.querySelectorAll('#tabs .tab').forEach(t=>t.onclick=()=>openFile(t.dataset.tab));
+  document.querySelectorAll('#tabs .viewseg button').forEach(b=>b.onclick=()=>setEditView(b.dataset.ev));
+  const tb=document.getElementById('tab-tree'); if(tb) tb.onclick=()=>document.getElementById('maiden').classList.toggle('drawer-open');
+  syncViewseg();
+}
+function syncViewseg(){ const m=document.getElementById('maiden').dataset.edit||'combo';
+  document.querySelectorAll('#tabs .viewseg button').forEach(b=>b.classList.toggle('on',b.dataset.ev===m)); }
+function setEditView(m){ document.getElementById('maiden').dataset.edit=m; LS.set('editview',m); syncViewseg();
+  if(editor) setTimeout(()=>editor.resize(),60); }
+
+/* ============ repl ============ */
+const out=()=>document.getElementById('replout');
+function replPrint(html){ const o=out(); o.innerHTML+=html+'\n'; o.scrollTop=o.scrollHeight; }
+let target='matron';
+function replSubmit(){
+  const inp=document.getElementById('replin'); const v=inp.value.trim(); if(!v) return;
+  replPrint(`&gt;&gt; <span class="cmd">${esc(v)}</span>`);
+  // canned responses
+  let resp='';
+  if(/clock\.tempo/.test(v)) resp='<span class="ok">110.0</span>';
+  else if(/params:get/.test(v)) resp='<span class="ok">0.5</span>';
+  else if(/^print/.test(v)) resp=v.replace(/^print\s*\(?["']?/,'').replace(/["']?\)?$/,'');
+  else if(target==='sc') resp='<span class="meta">-> sc: ok</span>';
+  else if(/=/.test(v)) resp='';
+  else resp='<span class="meta"># ok</span>';
+  if(resp) replPrint(resp);
+  inp.value=''; hideAC();
+}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+/* autocomplete */
+let acItems=[], acIdx=-1;
+function curToken(v){ const m=v.match(/[\w.:]*$/); return m?m[0]:''; }
+function updateAC(){
+  const inp=document.getElementById('replin'); const tok=curToken(inp.value);
+  const ac=document.getElementById('ac');
+  if(tok.length<1){ hideAC(); return; }
+  acItems=FUNCS.filter(f=>f[0].toLowerCase().includes(tok.toLowerCase())).slice(0,8);
+  if(!acItems.length){ hideAC(); return; }
+  acIdx=0;
+  ac.innerHTML=acItems.map((f,i)=>
+    `<div class="ac-item ${i===0?'hl':''}" data-i="${i}"><span class="fn">${f[0]}</span><span class="sig">${f[1]}</span><span class="doc">${f[2]}</span></div>`).join('');
+  ac.classList.add('show');
+  ac.querySelectorAll('.ac-item').forEach(it=>{ it.onclick=()=>acceptAC(+it.dataset.i); });
+}
+function acceptAC(i){
+  const inp=document.getElementById('replin'); const f=acItems[i]; if(!f) return;
+  inp.value=inp.value.replace(/[\w.:]*$/, f[0]+(f[1]&&f[1]!==''?'(':''));
+  hideAC(); inp.focus();
+}
+function hideAC(){ document.getElementById('ac').classList.remove('show'); acItems=[]; acIdx=-1; }
+
+/* ============ repo manager ============ */
+let repoTab='available', repoQuery='', sortMode='recent';
+const selection=new Set();   // selected script names for bulk install/update
+function updateBulkBar(){
+  const bar=document.getElementById('bulkbar'); if(!bar) return;
+  const n=selection.size;
+  if(!n){ bar.classList.remove('show'); bar.innerHTML=''; return; }
+  const verb=repoTab==='installed'?'Update':'Install';
+  bar.innerHTML=`<span class="bcount">${n} selected</span><button class="btn btn-remove" data-bclear>Clear</button><button class="btn btn-install" data-bgo>${verb} ${n} selected</button>`;
+  bar.classList.add('show');
+  bar.querySelector('[data-bclear]').onclick=()=>{selection.clear();updateGrid();updateBulkBar();};
+  bar.querySelector('[data-bgo]').onclick=bulkInstall;
+}
+function bulkInstall(){
+  const items=repoList(repoTab).filter(p=>selection.has(p.n));
+  if(!items.length) return;
+  const untrusted=items.filter(p=>!isTrusted(p));
+  const go=()=>{ items.forEach(p=>enqueueInstall(p,null)); selection.clear(); updateGrid(); updateBulkBar(); };
+  if(untrusted.length && !snoozeActive()){
+    trustPending={bulk:go};
+    document.getElementById('trust-msg').innerHTML=`<b>${untrusted.length}</b> of ${items.length} selected script${items.length>1?'s':''} come from sources outside maiden's built-in community catalog.`;
+    document.getElementById('trust-remember').checked=false;
+    document.getElementById('trust-overlay').classList.add('on');
+  } else go();
+}
+function repoBaseList(tab){
+  let list=REPO[tab];
+  if(tab!=='installed'){ const av=availSources(); list=list.filter(p=>p.srcs.some(s=>av.includes(s)&&srcFilter.has(s))); }
+  return list;
+}
+function sortCmp(a,b){
+  if(sortMode==='name')    return a.n.localeCompare(b.n);
+  if(sortMode==='author')  return (a.a||'').localeCompare(b.a||'');
+  if(sortMode==='stars')   return (b.stars||0)-(a.stars||0);
+  if(sortMode==='updated') return (b.upd||'').localeCompare(a.upd||'');
+  return 0; // recent = source order
+}
+function knownNames(){ const s=new Set(); REPO.installed.forEach(p=>s.add(p.n.toLowerCase()));
+  REPO.available.forEach(p=>{ if(p.srcs.includes('community')) s.add(p.n.toLowerCase()); }); return s; }
+function repoList(tab){
+  let list=repoBaseList(tab).slice();
+  if(tab==='discover' && discHideKnown){ const k=knownNames(); list=list.filter(p=>!k.has(p.n.toLowerCase())); }
+  if(repoQuery && tab!=='discover'){ const q=repoQuery.toLowerCase();   // discover searches GitHub on Enter, not live
+    list=list.filter(p=>(p.n+' '+p.a+' '+(p.tags||[]).join(' ')+' '+(p.d||'')).toLowerCase().includes(q)); }
+  return list.sort(sortCmp);
+}
+function updateGrid(){
+  const v=document.getElementById('repoview'); const grid=v.querySelector('.rd-grid'); if(!grid) return;
+  const tab=repoTab, list=repoList(tab);
+  grid.innerHTML=list.map(p=>repoCard(p,tab)).join('')||`<div class="gh-empty"><p>nothing matches “${repoQuery}”.</p></div>`;
+  const cnt=v.querySelector('.rd-count'); if(cnt) cnt.textContent=list.length+(tab==='discover'?' results':' scripts');
+  wireCards(v,list,tab); updateBulkBar();
+}
+/* --- install trust gate: warn for anything outside the built-in community catalog --- */
+function isTrusted(p){ return (p.srcs||[]).includes('community'); }
+function snoozeActive(){ const e=LS.get('trustSnooze',0); return e && Date.now()<e; }
+let trustPending=null;
+function doInstall(p,btn,note){ if(btn){btn.textContent='queued…';btn.disabled=true;} enqueueInstall(p,btn,note); }
+function enqueueInstall(p,btn,note){
+  const dock=document.getElementById('install-dock');
+  const job=document.createElement('div'); job.className='ijob';
+  job.innerHTML=`<div class="ihead"><span class="ispin"></span><span>${p.n}</span><span class="istatus">installing</span><button class="iclose" title="dismiss">✕</button></div><div class="ilog"></div>`;
+  dock.appendChild(job);
+  job.querySelector('.iclose').onclick=()=>job.remove();
+  const log=job.querySelector('.ilog'), status=job.querySelector('.istatus');
+  const steps=[`cloning ${p.proj||('github.com/…/'+p.n)} …`,'resolving dependencies…',`copying to ~/dust/code/${p.n}…`,'scanning for engines…',...(note?[note]:[])];
+  let i=0;
+  const tick=()=>{
+    if(i<steps.length){ log.textContent+=(i?'\n':'')+steps[i]; log.scrollTop=log.scrollHeight; i++; setTimeout(tick,340+Math.random()*240); return; }
+    const ok=!/err|fail/i.test(p.n);
+    job.classList.add(ok?'ok':'err');
+    job.querySelector('.ispin').style.display='none';
+    status.textContent=ok?'✓ installed':'✗ errors';
+    log.textContent+='\n'+(ok?`✓ ${p.n} installed successfully — run SYSTEM > RESTART`:`✗ ${p.n} installed with errors`);
+    if(btn){ btn.textContent=ok?'installed':'retry'; btn.disabled=false; }
+    if(ok) setTimeout(()=>{ job.style.transition='opacity .4s'; job.style.opacity='0'; setTimeout(()=>job.remove(),450); }, 4500);
+  };
+  setTimeout(tick,300);
+}
+/* demo embed helpers */
+function isUrl(u){ return typeof u==='string' && /^https?:\/\//i.test(u.trim()); }
+function ytId(u){ if(!u)return''; const m=u.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/))([\w-]{11})/); return m?m[1]:''; }
+function vimeoId(u){ if(!u)return''; const m=u.match(/vimeo\.com\/(?:video\/)?(\d+)/); return m?m[1]:''; }
+function scEmbedSrc(u){ // returns a SoundCloud player src for embeddable URLs, else ''
+  if(/w\.soundcloud\.com\/player/i.test(u)) return u;                       // already an embed URL
+  const m=u.match(/^https?:\/\/soundcloud\.com\/([^/]+)\/([^/?#]+)/i);      // soundcloud.com/<user>/<track>
+  if(m && m[1].toLowerCase()!=='track') return `https://w.soundcloud.com/player/?url=${encodeURIComponent(u)}&color=%23ad8888&visual=false&show_comments=false`;
+  return '';                                                                // malformed (e.g. soundcloud.com/track/<id>) → link out
+}
+function demoKind(u){ // null = not playable; embed kinds use an iframe, link kinds open out
+  if(!isUrl(u)) return null;
+  if(ytId(u)) return 'youtube';
+  if(vimeoId(u)) return 'vimeo';
+  if(/soundcloud\.com/i.test(u)) return scEmbedSrc(u)?'soundcloud':'link';
+  if(/instagram\.com/i.test(u)) return 'instagram';
+  return 'link';
+}
+function loadDemo(card,p){
+  const slot=card.querySelector('.more-demo'); if(!slot||slot.dataset.loaded) return;
+  const u=(p.demo||'').trim(), k=demoKind(u); slot.dataset.loaded=1;
+  if(k==='youtube') slot.innerHTML=`<iframe src="https://www.youtube.com/embed/${ytId(u)}" allowfullscreen loading="lazy"></iframe>`;
+  else if(k==='vimeo') slot.innerHTML=`<iframe src="https://player.vimeo.com/video/${vimeoId(u)}" allowfullscreen loading="lazy"></iframe>`;
+  else if(k==='soundcloud') slot.innerHTML=`<iframe class="sc" src="${scEmbedSrc(u)}" allow="autoplay" loading="lazy"></iframe>`;
+  else slot.innerHTML='<span class="more-nodemo">no playable demo</span>';
+}
+/* live GitHub search for the discover tab (paged, search on Enter/button only) */
+let _discLoaded=false, _discQuery='', _discPage=1, _discTotal=0, discHideKnown=false;
+const DISC_PER=24;
+async function ghSearch(query,page){
+  _discQuery=(query!=null?query:_discQuery); _discPage=page||1;
+  const v=document.getElementById('repoview'); const grid=v.querySelector('.rd-grid');
+  if(grid) grid.innerHTML=`<div class="gh-empty"><p>searching GitHub for “${(_discQuery||'norns').trim()}” (page ${_discPage})…</p></div>`;
+  try{
+    const headers={'Accept':'application/vnd.github+json'};
+    const g=LS.get('gh',{})||{}; if(g.t) headers['Authorization']='token '+g.t;
+    const q=encodeURIComponent(((_discQuery||'').trim()+' norns').trim());
+    const r=await fetch(`https://api.github.com/search/repositories?q=${q}&sort=stars&order=desc&per_page=${DISC_PER}&page=${_discPage}`,{headers});
+    if(!r.ok) throw new Error('HTTP '+r.status+(r.status===403?' (rate limit — add a token in settings)':''));
+    const j=await r.json();
+    _discTotal=Math.min(j.total_count||0,1000);   // GitHub caps search at 1000 results
+    const comm=new Set(REPO.available.filter(p=>p.srcs.includes('community')).map(p=>p.n.toLowerCase()));
+    REPO.discover=(j.items||[]).map(it=>{
+      const srcs=['github']; if(comm.has((it.name||'').toLowerCase())) srcs.push('community');
+      if(it.owner&&it.owner.login===GHUSER) srcs.push('mine');
+      return { n:it.name, a:it.owner?it.owner.login:'?', d:it.description||'(no description)', v:'',
+        tags:(it.topics||[]).slice(0,5), stars:it.stargazers_count, upd:(it.pushed_at||'').slice(0,10),
+        proj:it.html_url, srcs, gh:1 };
+    });
+    _discLoaded=true; if(repoTab==='discover') renderRepo();
+  }catch(err){ if(grid) grid.innerHTML=`<div class="gh-empty"><p>GitHub search failed: ${err.message}</p></div>`; }
+}
+/* ===== B2: engine-name deconfliction (shared "device bridge" plumbing — see mcp/) =====
+   In production this queries the device for registered SC engines (matron `engine.names`,
+   exposed by the MCP server's engines_list/engine_check_conflict tools). Here it's mocked. */
+const SHIP_ENGINE={ // script → the SuperCollider engine class it registers
+  awake:'PolyPerc', ack:'Ack', glut:'Glut', cheat_codes_2:'Glut', molly_the_poly:'MollyThePoly',
+  passersby:'Passersby', thebangs:'TheBangs', timber:'Timber', goldeneye:'Goldeneye',
+  step:'PolyPerc', barcode:'Barcode', oooooo:'SoftcutTape'
+};
+let INSTALLED_ENGINES={ PolyPerc:'awake', Glut:'glut', Ack:'ack' }; // engine class → owning script (pretend-installed)
+function shipEngine(p){ return SHIP_ENGINE[(p.n||'').toLowerCase().replace(/\s+/g,'_')]||null; }
+function engineConflict(p){ const e=shipEngine(p); if(!e) return null;
+  const owner=INSTALLED_ENGINES[e]; const key=(p.n||'').toLowerCase().replace(/\s+/g,'_');
+  return (owner && owner!==key) ? {engine:e, owner} : null; }
+function availableEngineName(base){ const taken=new Set(Object.keys(INSTALLED_ENGINES)); let n=base,i=1; while(taken.has(n)){n=base+'_'+(++i);} return n; }
+function registerEngine(p,name){ if(name) INSTALLED_ENGINES[name]=(p.n||'').toLowerCase().replace(/\s+/g,'_'); }
+
+let enginePending=null;
+function requestInstall(p,btn,tab){
+  if(isTrusted(p) || snoozeActive()) afterTrust(p,btn);
+  else {
+    trustPending={p,btn};
+    const src=(p.srcs||[]).map(s=>SRC[s]?SRC[s].name:s).join(', ')||'an external source';
+    document.getElementById('trust-msg').innerHTML=`<b>${p.n}</b> by ${p.a} comes from <b>${src}</b> — not maiden's built-in community catalog.`;
+    document.getElementById('trust-remember').checked=false;
+    document.getElementById('trust-overlay').classList.add('on');
+  }
+}
+function afterTrust(p,btn){ const c=engineConflict(p); if(c) openEngineModal(p,c,btn); else proceedInstall(p,btn); }
+function proceedInstall(p,btn,renamed){ const e=shipEngine(p);
+  if(e) registerEngine(p, renamed||e);
+  doInstall(p,btn, renamed?`engine renamed: ${e} → ${renamed}`:'');
+}
+function openEngineModal(p,c,btn){
+  enginePending={p,btn};
+  const suggest=availableEngineName(c.engine);
+  document.getElementById('eng-msg').innerHTML=`<b>${p.n}</b> registers a SuperCollider engine named <b>${c.engine}</b>, already provided by <b>${c.owner}</b>. Two engines can't share a class name — installing as-is can break one of them.`;
+  document.getElementById('eng-rename').value=suggest;
+  document.getElementById('eng-overlay').classList.add('on');
+}
+function wireCards(v,list,tab){
+  const cards=v.querySelectorAll('.rd-grid > .card');
+  cards.forEach((card,i)=>{
+    const p=list[i]; if(!p) return;
+    const ins=card.querySelector('.btn-install'); if(ins) ins.onclick=e=>{e.stopPropagation();requestInstall(p,ins,tab);};
+    const up=card.querySelector('.btn-update'); if(up) up.onclick=e=>{e.stopPropagation();requestInstall(p,up,tab);};
+    const rm=card.querySelector('.btn-remove'); if(rm) rm.onclick=e=>{e.stopPropagation();const t=rm.textContent;rm.textContent='removed';setTimeout(()=>{rm.textContent=t;},900);};
+    card.querySelectorAll('.pill[data-tag]').forEach(tg=>tg.onclick=e=>{e.stopPropagation();
+      repoQuery=tg.dataset.tag; const q=document.getElementById('rd-q'); if(q) q.value=repoQuery; updateGrid();});
+    card.querySelectorAll('a,.demo-btn,.lnk,.csel').forEach(el=>el.addEventListener('click',e=>e.stopPropagation()));
+    const cb=card.querySelector('input[data-sel]'); if(cb) cb.onclick=e=>{ e.stopPropagation();
+      if(cb.checked) selection.add(p.n); else selection.delete(p.n); updateBulkBar(); };
+    const db=card.querySelector('.demo-btn'); if(db) db.onclick=e=>{e.stopPropagation();loadDemo(card,p);};
+    // cards stay expanded; demo embeds load on demand via the "load demo" button
+  });
+}
+function availSources(){ return SRC_ORDER.filter(id=>SRC_ON[id] && (!SRC[id].auth || ghConnected)); }
+function srcTagsHTML(p){
+  return (p.srcs||[]).filter(s=>SRC[s]).map(s=>{
+    const c=SRC[s].color;
+    return `<span class="srctag" style="background:color-mix(in srgb,${c} 18%,transparent);color:${c};border:1px solid color-mix(in srgb,${c} 42%,transparent)"><i style="background:${c}"></i>${SRC[s].name}</span>`;
+  }).join('');
+}
+function srcNames(p){ return (p.srcs||[]).map(s=>SRC[s]?SRC[s].name:s).join(', '); }
+function installState(p,tab){ if(p.upd_avail) return 'update'; if(tab==='installed'||p.inst) return 'installed'; return 'none'; }
+function repoCard(p,tab){
+  const st=installState(p,tab);
+  const badge = st==='update'   ? `<span class="okb upd"><svg viewBox="0 0 32 32"><path d="${I.refresh}"/></svg>update</span>`
+              : st==='installed'? `<span class="okb"><svg viewBox="0 0 32 32"><path d="${I.check}"/></svg>installed</span>` : '';
+  const lock=p.priv?`<span class="lock">private</span>`:'';
+  const actions = (tab==='installed')
+    ? (p.upd_avail?`<button class="btn btn-update">Update</button><button class="btn btn-remove">Remove</button>`
+                  :`<button class="btn btn-remove">Remove</button>`)
+    : (p.inst?`<button class="btn btn-remove">Remove</button>`:`<button class="btn btn-install">${tab==='discover'?'Clone':'Install'}</button>`);
+  const pills=(p.tags||[]).map(t=>`<span class="pill" data-tag="${t}">${t}</span>`).join('');
+  const doc=(p.doc||p.docU)?`<span class="lnk" title="documentation"><svg viewBox="0 0 32 32"><path d="${I.book}"/></svg></span>`:'';
+  const disc=(p.disc||p.discU)?`<span class="lnk" title="discussion"><svg viewBox="0 0 32 32"><path d="${I.chat}"/></svg></span>`:'';
+  const stars=(p.stars!=null && p.gh)?`<span class="stars" title="github stars">★ ${p.stars}</span>`:'';
+  const ver=p.v?`<span class="ver">v${p.v}</span>`:'';
+  const L=(u,t)=> isUrl(u)?`<a class="more-link" href="${u}" target="_blank" rel="noopener">${t} ↗</a>`:'';
+  const hasLinks=isUrl(p.proj)||isUrl(p.docU)||isUrl(p.discU)||isUrl(p.comm);
+  const dk=demoKind(p.demo);
+  const demoSlot = !dk ? '<span class="more-nodemo">no playable demo</span>'
+    : (dk==='instagram'||dk==='link')
+      ? `<a class="demo-ext" href="${p.demo.trim()}" target="_blank" rel="noopener">▶ ${dk==='instagram'?'watch on Instagram':'open demo'} ↗</a>`
+      : `<button class="demo-btn">▶ load ${dk} demo</button>`;
+  const more=`<div class="card-more">
+      <div class="more-meta">${p.upd?`updated ${p.upd}`:'last-updated unknown'} · via ${srcNames(p)}</div>
+      ${hasLinks?`<div class="more-links">${L(p.proj,'code')}${L(p.docU,'docs')}${L(p.discU,'discuss')}${L(p.comm,'norns.community')}</div>`:''}
+      <div class="more-demo">${demoSlot}</div>
+    </div>`;
+  return `<div class="card open${p.gh?' gh':''}" ${p.gh?`style="--srcc:${SRC[(p.srcs||[])[0]]?SRC[(p.srcs||[])[0]].color:'var(--trim)'}"`:''}>
+    <div class="head"><label class="csel" title="select for bulk install"><input type="checkbox" data-sel ${selection.has(p.n)?'checked':''}></label><div class="id">
+      <div class="nm">${p.n} ${badge}${lock}</div><div class="by">by <a href="#">${p.a}</a></div></div>
+      <div class="act-row">${actions}</div></div>
+    <div class="desc">${p.d}</div>
+    <div class="foot">${srcTagsHTML(p)}${pills}<span class="grow"></span>${stars}${doc}${disc}${ver}</div>
+    ${more}</div>`;
+}
+function srcBar(tab){
+  const want = tab==='discover' ? ['github','mine'] : ['community','kalium','mine'];
+  const ids = want.filter(id=>availSources().includes(id));
+  if(!ids.length) return '';
+  const chips = ids.map(id=>{
+    const c=SRC[id].color, on=srcFilter.has(id);
+    return `<span class="srcchip ${on?'on':'off'}" data-src="${id}" style="--c:${c}"><i></i>${SRC[id].name}</span>`;
+  }).join('');
+  const extra = tab==='discover'
+    ? `<span class="srcchip ${discHideKnown?'on':''}" data-hideknown="1" style="--c:var(--accent)"><i></i>${discHideKnown?'hiding ':'hide '}already in catalog/installed</span>` : '';
+  return `<div class="srcbar"><span class="lbl">sources</span>${chips}<span class="srcchip add" data-addsrc="1">+ add</span>${extra}</div>`;
+}
+function renderRepo(){
+  const v=document.getElementById('repoview'); const tab=repoTab;
+  v.classList.remove('collapsed');
+  const tabs=`<div class="rd-tabs">
+        <button class="rd-tab ${tab==='installed'?'on':''}" data-rt="installed">installed <span class="ct">${REPO.installed.length}</span></button>
+        <button class="rd-tab ${tab==='available'?'on':''}" data-rt="available">available <span class="ct">${REPO.available.filter(p=>p.srcs.some(s=>availSources().includes(s))).length}</span></button>
+        <button class="rd-tab ${tab==='discover'?'on':''}" data-rt="discover">discover <span class="ct">${ghConnected?REPO.discover.length:'⌗'}</span></button>
+        <button class="rd-toggle" id="rd-toggle" title="hide / show search"><svg viewBox="0 0 32 32"><path d="M16 21L6 11l2.1-2.1L16 16.8 23.9 8.9 26 11z"/></svg></button>
+      </div>`;
+
+  // discover gated on github connection
+  if(tab==='discover' && !ghConnected){
+    v.innerHTML=`<div class="rd-top">${tabs}</div>
+      <div class="rd-scroll"><div class="gh-empty">
+        <div class="big"><svg viewBox="0 0 24 24"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-1.7c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.3.8 1 .8 2.1v3.1c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg></div>
+        <h3>discover scripts across GitHub</h3>
+        <p>connect a GitHub token to search every norns repo on GitHub, pull in your own public &amp; private repos, and add custom catalogs — all tagged by source.</p>
+        <button class="btn btn-install" id="gh-empty-connect">Connect GitHub in settings</button>
+      </div></div>`;
+    v.querySelectorAll('[data-rt]').forEach(b=>b.onclick=()=>{repoTab=b.dataset.rt;renderRepo();});
+    document.getElementById('gh-empty-connect').onclick=openCfg;
+    return;
+  }
+
+  const list=repoList(tab);
+  const allBtn = tab==='installed'
+    ? `<button class="rd-pill-btn" data-act="refresh"><svg viewBox="0 0 32 32"><path d="${I.refresh}"/></svg>Update all</button>`
+    : tab==='discover'
+    ? `<button class="rd-pill-btn" data-act="search"><svg viewBox="0 0 32 32"><path d="${I.search}"/></svg>Search GitHub</button>`
+    : `<button class="rd-pill-btn" data-act="refresh"><svg viewBox="0 0 32 32"><path d="${I.refresh}"/></svg>Refresh all</button>`;
+  const ph = tab==='discover' ? 'search github for norns scripts — press enter ↵' : 'search scripts, authors, tags…';
+  const opts=[['recent','recent'],['updated','last updated'],['name','name a–z'],['author','author']].concat(tab==='discover'?[['stars','stars']]:[]);
+  const sortSel=`<select class="rd-sort" id="rd-sort" title="sort">${opts.map(o=>`<option value="${o[0]}" ${sortMode===o[0]?'selected':''}>sort: ${o[1]}</option>`).join('')}</select>`;
+  const head = `<div class="rd-cathead"><span class="nm rd-count">${list.length} ${tab==='discover'?'results':'scripts'}</span>${tab!=='installed'?`<span>${tab==='discover'?'norns scripts on github':'from '+availSources().filter(s=>!SRC[s].auth||ghConnected).length+' sources'}</span>`:''}<span class="line"></span><button class="selall-btn" data-selall>select all</button></div>`;
+  const totalPages = tab==='discover' ? Math.max(1,Math.ceil(_discTotal/DISC_PER)) : 1;
+  const pager = (tab==='discover' && _discTotal>0) ? `<div class="rd-pager">
+      <button class="fv-btn" data-page="${_discPage-1}" ${_discPage<=1?'disabled':''}>‹ prev</button>
+      <span class="pginfo">page ${_discPage} of ${totalPages.toLocaleString()} · ${_discTotal.toLocaleString()} results</span>
+      <button class="fv-btn" data-page="${_discPage+1}" ${_discPage>=totalPages?'disabled':''}>next ›</button></div>` : '';
+  v.innerHTML=`<div class="rd-top">${tabs}
+      <div class="rd-toolbar">
+        <label class="rd-search"><svg viewBox="0 0 32 32"><path d="${I.search}"/></svg><input id="rd-q" placeholder="${ph}"></label>
+        ${sortSel}${allBtn}
+      </div>${tab==='installed'?'':srcBar(tab)}</div>
+    <div class="rd-scroll"><div>${head}<div class="rd-grid">${list.map(p=>repoCard(p,tab)).join('')||`<div class="gh-empty"><p>nothing here yet.</p></div>`}</div>${pager}</div></div>
+    <div class="bulkbar" id="bulkbar"></div>`;
+  v.querySelectorAll('[data-rt]').forEach(b=>b.onclick=()=>{repoTab=b.dataset.rt;repoQuery='';selection.clear();renderRepo();});
+  v.querySelectorAll('[data-selall]').forEach(b=>b.onclick=()=>{
+    const cur=repoList(repoTab); const allSel=cur.length&&cur.every(p=>selection.has(p.n));
+    cur.forEach(p=>allSel?selection.delete(p.n):selection.add(p.n)); updateGrid(); updateBulkBar();
+  });
+  v.querySelectorAll('[data-src]').forEach(c=>c.onclick=()=>{
+    const id=c.dataset.src; srcFilter.has(id)?srcFilter.delete(id):srcFilter.add(id); renderRepo();
+  });
+  v.querySelectorAll('[data-addsrc]').forEach(c=>c.onclick=openCfg);
+  const q=document.getElementById('rd-q');
+  if(q){
+    if(tab==='discover'){ q.value=_discQuery; q.addEventListener('keydown',e=>{ if(e.key==='Enter') ghSearch(q.value,1); }); }
+    else { q.value=repoQuery; q.addEventListener('input',e=>{repoQuery=e.target.value;updateGrid();}); }
+  }
+  const ss=document.getElementById('rd-sort'); if(ss) ss.addEventListener('change',e=>{sortMode=e.target.value;updateGrid();});
+  v.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>{
+    if(b.dataset.act==='search'){ const i=document.getElementById('rd-q'); ghSearch(i?i.value:'',1); }
+    else { const t=b.innerHTML; b.innerHTML='✓ done'; setTimeout(()=>{b.innerHTML=t;},900); }
+  });
+  v.querySelectorAll('[data-hideknown]').forEach(c=>c.onclick=()=>{ discHideKnown=!discHideKnown; renderRepo(); });
+  v.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{ const p=+b.dataset.page; if(p>=1 && !b.disabled) ghSearch(_discQuery,p); });
+  wireCards(v,list,tab); updateBulkBar();
+  if(tab==='discover' && ghConnected && !_discLoaded) ghSearch('sequencer');   // live results on first open
+  const tg=document.getElementById('rd-toggle'); if(tg) tg.onclick=()=>v.classList.toggle('collapsed');
+  const sc=v.querySelector('.rd-scroll'); let lst=0;
+  if(sc) sc.addEventListener('scroll',()=>{ const t=sc.scrollTop;
+    if(t>lst+6 && t>60) v.classList.add('collapsed'); else if(t<lst-6) v.classList.remove('collapsed'); lst=t; });
+}
+
+/* ============ navigation ============ */
+function setAct(which){ document.getElementById('a-files').classList.toggle('on',which==='files');
+  document.getElementById('a-proj').classList.toggle('on',which==='proj'); }
+function showMain(){document.getElementById('main').style.display='flex';
+  document.getElementById('repoview').classList.remove('on');document.getElementById('filesview').classList.remove('on');setAct('');}
+function showRepo(){document.getElementById('main').style.display='none';document.getElementById('filesview').classList.remove('on');
+  document.getElementById('repoview').classList.add('on');
+  document.getElementById('maiden').classList.remove('drawer-open');   // tree hides in the repository manager
+  setAct('proj');renderRepo();}
+function showFiles(){document.getElementById('main').style.display='none';document.getElementById('repoview').classList.remove('on');
+  document.getElementById('filesview').classList.add('on');
+  document.getElementById('maiden').classList.remove('drawer-open');
+  setAct('files');renderFiles();}
+const maiden=document.getElementById('maiden');
+function setMobileView(v){
+  maiden.classList.remove('drawer-open');
+  if(v==='repo'){ showRepo(); }
+  else if(v==='files'){ showFiles(); }
+  else { showMain(); maiden.dataset.view=v; }
+  document.querySelectorAll('.mtab').forEach(t=>t.classList.toggle('on',t.dataset.mv===v));
+}
+
+/* ============ first-class file manager ============ */
+/* dust is the top limit — you can browse within it but not above */
+const FS={name:'dust',type:'dir',children:[
+  {name:'code',type:'dir',children:[
+    {name:'awake',type:'dir',children:[{name:'awake.lua',type:'file',size:2150,mod:'2024-10-13'},
+      {name:'engine',type:'dir',children:[{name:'PolyPerc.sc',type:'file',size:840,mod:'2024-10-13'}]}]},
+    {name:'cheat_codes_2',type:'dir',children:[{name:'cheat_codes_2.lua',type:'file',size:18400,mod:'2023-08-02'}]},
+    {name:'mlr',type:'dir',children:[{name:'mlr.lua',type:'file',size:9200,mod:'2022-03-11'}]},
+    {name:'takt',type:'dir',children:[{name:'takt.lua',type:'file',size:6100,mod:'2021-12-01'}]}]},
+  {name:'audio',type:'dir',children:[
+    {name:'tape',type:'dir',children:[{name:'2024-10-13.wav',type:'file',size:5242880,mod:'2024-10-13'}]},
+    {name:'x0x',type:'dir',children:[{name:'kick.wav',type:'file',size:48128,mod:'2020-05-01'},
+      {name:'snare.wav',type:'file',size:39200,mod:'2020-05-01'},{name:'hat.wav',type:'file',size:21000,mod:'2020-05-01'}]}]},
+  {name:'data',type:'dir',children:[{name:'awake',type:'dir',children:[{name:'awake.pset',type:'file',size:1200,mod:'2024-10-14'}]},
+    {name:'system.state',type:'file',size:420,mod:'2024-10-14'}]}
+]};
+let fvPath=['dust'], fvSel=new Set();
+let splitUpload=LS.get('splitupload',false);   // unified (drag for folders) by default; split adds a folder picker
+function fvNode(path){ let n=FS; for(let i=1;i<path.length;i++){ const x=(n.children||[]).find(c=>c.name===path[i]&&c.type==='dir'); if(!x) break; n=x; } return n; }
+function fmtSize(b){ if(b==null) return ''; if(b<1024) return b+' B'; if(b<1048576) return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+function renderFiles(){
+  const v=document.getElementById('filesview'); const node=fvNode(fvPath);
+  const crumbs=fvPath.map((seg,i)=>`<button class="fv-crumb ${i===fvPath.length-1?'cur':''}" data-cd="${i}">${seg}</button>`).join('<span class="fv-sep">/</span>');
+  const kids=(node.children||[]).slice().sort((a,b)=>(a.type===b.type)?a.name.localeCompare(b.name):(a.type==='dir'?-1:1));
+  const rows=kids.length?kids.map(c=>{ const dir=c.type==='dir';
+    return `<div class="fv-row ${dir?'dir':''}" data-name="${c.name}" data-dir="${dir?1:0}">
+      <input type="checkbox" class="fcheck" ${fvSel.has(c.name)?'checked':''}>
+      <svg class="fic" viewBox="0 0 32 32"><path d="${dir?I.dir:I.lua}"/></svg>
+      <span class="fnm">${c.name}${dir?'/':''}</span>
+      <span class="fsz">${dir?((c.children||[]).length+' items'):fmtSize(c.size)}</span>
+      <span class="fmod">${c.mod||''}</span>
+      <span class="fract-wrap"><button class="fract rn" data-rn title="rename">✎</button><button class="fract del" data-del title="delete">🗑</button></span></div>`;}).join('')
+    : `<div class="fv-empty">empty — drag files or folders here, or use ⬆ upload</div>`;
+  const atRoot=fvPath.length<=1, nsel=fvSel.size;
+  v.innerHTML=`<div class="fv-bar">
+      <button class="fv-btn" data-up ${atRoot?'disabled':''}>↑ up</button>
+      <div class="fv-crumbs">${crumbs}</div>
+      <button class="fv-btn" data-newdir>+ folder</button>
+      ${splitUpload
+        ? `<button class="fv-btn primary" data-upload>⬆ files</button><button class="fv-btn" data-uploaddir>⬆ folder</button>`
+        : `<button class="fv-btn primary" data-upload title="upload files — or drag files &amp; folders anywhere here">⬆ upload</button>`}
+      <button class="fv-btn" data-download ${nsel?'':'disabled'}>⬇ download${nsel?' ('+nsel+')':''}</button>
+      ${nsel?`<button class="fv-btn danger" data-delsel>🗑 delete (${nsel})</button>`:''}
+    </div>
+    <div class="fv-list">${rows}</div>
+    <div class="fv-drop"><span class="msg">drop files or folders to upload to /${fvPath.join('/')}</span></div>
+    <div class="fv-prog" id="fv-prog"></div>`;
+  v.querySelectorAll('[data-cd]').forEach(b=>b.onclick=()=>{fvPath=fvPath.slice(0,+b.dataset.cd+1);fvSel.clear();renderFiles();});
+  v.querySelector('[data-up]').onclick=()=>{ if(fvPath.length>1){fvPath.pop();fvSel.clear();renderFiles();} };
+  v.querySelector('[data-upload]').onclick=()=>document.getElementById('file-input').click();   // files; folders via drag (one path)
+  const ud=v.querySelector('[data-uploaddir]'); if(ud) ud.onclick=()=>document.getElementById('dir-input').click();
+  v.querySelector('[data-download]').onclick=fvDownload;
+  const ds=v.querySelector('[data-delsel]'); if(ds) ds.onclick=deleteSelected;
+  v.querySelector('[data-newdir]').onclick=()=>{ const n=fvNode(fvPath); n.children=n.children||[];
+    let i=1,nm='new_folder'; while(n.children.find(c=>c.name===nm)){nm='new_folder_'+(++i);} n.children.push({name:nm,type:'dir',children:[]}); renderFiles(); };
+  v.querySelectorAll('.fv-row').forEach(r=>{
+    const nm=r.dataset.name, dir=r.dataset.dir==='1';
+    const cb=r.querySelector('.fcheck'); cb.onclick=e=>{e.stopPropagation(); cb.checked?fvSel.add(nm):fvSel.delete(nm); renderFiles();};
+    r.querySelector('[data-rn]').onclick=e=>{e.stopPropagation(); startRename(r,nm);};
+    r.querySelector('[data-del]').onclick=e=>{e.stopPropagation(); deleteEntry(nm,dir);};
+    r.onclick=()=>{ if(dir){fvPath.push(nm);fvSel.clear();renderFiles();}
+      else if(/\.(lua|sc|txt|md|pset)$/.test(nm)) openFromFiles(nm); };
+  });
+}
+function startRename(r,oldName){
+  const span=r.querySelector('.fnm'); if(!span) return;
+  const inp=document.createElement('input'); inp.className='fnm-edit'; inp.value=oldName;
+  span.replaceWith(inp); inp.focus(); inp.select();
+  let done=false;
+  const commit=()=>{ if(done) return; done=true; const nn=inp.value.trim();
+    if(nn && nn!==oldName){ const node=fvNode(fvPath); const it=(node.children||[]).find(c=>c.name===oldName);
+      if(it && !(node.children||[]).some(c=>c.name===nn)){ it.name=nn; it.mod='just now'; if(fvSel.has(oldName)){fvSel.delete(oldName);fvSel.add(nn);} } }
+    renderFiles(); };
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();commit();} else if(e.key==='Escape'){done=true;renderFiles();} });
+  inp.addEventListener('blur',commit); inp.addEventListener('click',e=>e.stopPropagation());
+}
+function deleteEntry(nm,dir){
+  const node=fvNode(fvPath); const it=(node.children||[]).find(c=>c.name===nm); const count=it&&it.children?it.children.length:0;
+  const msg=dir?`Delete folder <b>${nm}/</b>${count?` and its ${count} item${count>1?'s':''}`:''}? This cannot be undone.`:`Delete <b>${nm}</b>? This cannot be undone.`;
+  confirmDialog('delete '+(dir?'folder':'file')+'?',msg,()=>{ node.children=(node.children||[]).filter(c=>c.name!==nm); fvSel.delete(nm); renderFiles(); },true);
+}
+function deleteSelected(){
+  const names=[...fvSel]; if(!names.length) return; const node=fvNode(fvPath);
+  const dirs=names.filter(nm=>{const it=(node.children||[]).find(c=>c.name===nm); return it&&it.type==='dir';}).length;
+  const msg=`Delete <b>${names.length}</b> selected item${names.length>1?'s':''}${dirs?` (${dirs} folder${dirs>1?'s':''} with their contents)`:''}? This cannot be undone.`;
+  confirmDialog('delete selected?',msg,()=>{ node.children=(node.children||[]).filter(c=>!fvSel.has(c.name)); fvSel.clear(); renderFiles(); },true);
+}
+/* one upload path for files AND folders (+ multiple of each). items: [{name,size,rel}] */
+function insertAt(node,parts,size){
+  let cur=node; for(let i=0;i<parts.length-1;i++){ const d=parts[i]; cur.children=cur.children||[];
+    let nx=cur.children.find(c=>c.name===d&&c.type==='dir'); if(!nx){nx={name:d,type:'dir',children:[]};cur.children.push(nx);} cur=nx; }
+  const fn=parts[parts.length-1]; cur.children=cur.children||[];
+  const ex=cur.children.find(c=>c.name===fn); if(ex){ex.size=size||0;ex.mod='just now';} else cur.children.push({name:fn,type:'file',size:size||0,mod:'just now'});
+}
+function doUpload(items){
+  if(!items||!items.length) return; const node=fvNode(fvPath);
+  const n=items.length, total=items.reduce((s,it)=>s+(it.size||0),0);
+  const tops=new Set(items.map(it=>{const p=(it.rel||it.name).split('/');return p.length>1?p[0]:null;}).filter(Boolean));
+  const prog=document.getElementById('fv-prog'); if(!prog) return; prog.classList.add('show');
+  const dest=`/${fvPath.join('/')}`, fnote=tops.size?` across ${tops.size} folder${tops.size>1?'s':''}`:'';
+  const setP=(pct,t,s)=>{ prog.innerHTML=`<div class="pt">${pct<100?'<span class="ispin"></span>':'✓'} ${t}</div><div class="psub">${s}</div><div class="pbar"><div class="pfill" style="width:${pct}%"></div></div>`; };
+  const batched=n>20;
+  const phases=batched
+    ? [[12,`packing ${n.toLocaleString()} files…`,`bundling ${n.toLocaleString()} files${fnote} into one archive (${fmtSize(total)}) — a single transfer, not ${n.toLocaleString()} round-trips`],
+       [68,'uploading archive…',`${fmtSize(total)} → ${dest}`],
+       [90,'extracting on norns…',`unpacking ${n.toLocaleString()} files${fnote}`],
+       [100,`uploaded ${n.toLocaleString()} files${fnote}`,`to ${dest}`]]
+    : [[45,`uploading ${n} file${n>1?'s':''}${fnote}…`,`${fmtSize(total)} → ${dest}`],
+       [100,`uploaded ${n} file${n>1?'s':''}${fnote}`,`to ${dest}`]];
+  let i=0; const run=()=>{ if(i<phases.length){ setP(...phases[i]); i++; setTimeout(run,700+Math.random()*450); }
+    else { items.forEach(it=>insertAt(node,(it.rel||it.name).split('/'),it.size)); setTimeout(()=>prog.classList.remove('show'),1500); renderFiles(); } };
+  run();
+}
+/* recurse dropped folders via the entries API so MULTIPLE folders work */
+async function gatherDrop(dt){
+  const entries=[...(dt.items||[])].map(it=>it.webkitGetAsEntry&&it.webkitGetAsEntry()).filter(Boolean);
+  if(!entries.length) return [...dt.files].map(f=>({name:f.name,size:f.size,rel:f.name}));
+  const out=[];
+  const walk=(entry,prefix)=>new Promise(res=>{
+    if(entry.isFile){ entry.file(f=>{out.push({name:entry.name,size:f.size,rel:prefix+entry.name});res();},()=>res()); }
+    else if(entry.isDirectory){ const reader=entry.createReader(), all=[];
+      const read=()=>reader.readEntries(async es=>{ if(!es.length){ for(const e of all) await walk(e,prefix+entry.name+'/'); res(); } else { all.push(...es); read(); } },()=>res()); read(); }
+    else res(); });
+  for(const e of entries) await walk(e,'');
+  return out;
+}
+let _confirmYes=null;
+function confirmDialog(title,msg,onYes,danger){
+  document.getElementById('confirm-title').textContent=title;
+  document.getElementById('confirm-msg').innerHTML=msg;
+  const ok=document.getElementById('confirm-ok'); ok.textContent=danger?'Delete':'OK'; ok.className='btn '+(danger?'btn-danger':'btn-install');
+  _confirmYes=onYes; document.getElementById('confirm-overlay').classList.add('on');
+}
+function openFromFiles(nm){ const known=Object.keys(FILES).find(k=>k.endsWith('/'+nm)||k===nm);
+  showMain(); if(maiden.dataset.edit==='console') setEditView('combo');
+  if(known) openFile(known);
+  else { if(!openTabs.includes(nm)) openTabs.push(nm); activeFile=nm; if(editor) editor.setValue('-- '+nm+'\n-- opened from /'+fvPath.join('/')+'\n',-1); document.getElementById('m-title').textContent=nm; renderTabs(); } }
+/* smart batched upload (mock) */
+function fvDownload(){ const names=[...fvSel]; if(!names.length) return; const prog=document.getElementById('fv-prog'); if(!prog) return;
+  prog.classList.add('show'); const multi=names.length>1;
+  prog.innerHTML=`<div class="pt"><span class="ispin"></span> ${multi?`zipping ${names.length} files…`:`downloading ${names[0]}…`}</div><div class="psub">from /${fvPath.join('/')}</div><div class="pbar"><div class="pfill" style="width:35%"></div></div>`;
+  setTimeout(()=>{ prog.innerHTML=`<div class="pt">✓ ${multi?`ready — ${names.length} files (norns-files.zip)`:names[0]}</div><div class="psub">saved to your device</div><div class="pbar"><div class="pfill" style="width:100%"></div></div>`;
+    setTimeout(()=>prog.classList.remove('show'),1700); },950); }
+/* combo-view resizable console (desktop / iPad) with sensible min sizes */
+function initSplit(){
+  const vs=document.querySelector('.vsplit'), main=document.getElementById('main');
+  if(!vs||!main) return;
+  let dragging=false;
+  const move=e=>{ if(!dragging) return; const y=e.touches?e.touches[0].clientY:e.clientY;
+    const r=main.getBoundingClientRect();
+    let h=r.bottom-y; h=Math.max(120,Math.min(r.height-260,h));   // console ≥120px, editor keeps ≥~260px
+    document.documentElement.style.setProperty('--repl-h',h+'px'); if(editor) editor.resize(); e.preventDefault(); };
+  const up=()=>{ dragging=false; vs.classList.remove('drag'); document.body.style.userSelect='';
+    window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up);
+    LS.set('replh', getComputedStyle(document.documentElement).getPropertyValue('--repl-h').trim()); };
+  vs.addEventListener('pointerdown',e=>{ dragging=true; vs.classList.add('drag'); document.body.style.userSelect='none';
+    window.addEventListener('pointermove',move); window.addEventListener('pointerup',up); e.preventDefault(); });
+}
+
+/* ============ config modal ============ */
+function buildThemeGrid(filter=''){
+  const g=document.getElementById('theme-grid');
+  document.getElementById('theme-count').textContent=THEMES.length;
+  g.innerHTML=THEMES.map((t,i)=>{
+    if(filter && !t.n.toLowerCase().includes(filter.toLowerCase())) return '';
+    return `<div class="tch ${i===curTheme?'on':''}" data-i="${i}">
+      <div class="prev" style="background:${t.bg}">
+        <div class="dots"><i style="background:${t.a1}"></i><i style="background:${t.a2}"></i><i style="background:${t.ok}"></i></div>
+        <div class="line" style="background:${t.fg}"></div></div>
+      <div class="nm" style="background:${t.p};color:${t.fg};border-color:${t.tr}">${t.n}</div></div>`;
+  }).join('');
+  g.querySelectorAll('.tch').forEach(c=>c.onclick=()=>{userPickedTheme=true;applyTheme(+c.dataset.i);});
+}
+function renderGh(){
+  const b=document.getElementById('gh-box');
+  if(ghConnected){
+    b.innerHTML=`<div class="gh-connected"><span class="ok">✓</span> connected as <b>@${GHUSER}</b>
+      <button id="gh-disc">disconnect</button></div>
+      <div class="gh-hint">your public &amp; private repos and github-wide search are now available as sources below and in the <b>discover</b> tab.</div>`;
+    b.querySelector('#gh-disc').onclick=()=>{ghConnected=false;LS.set('gh',{c:false});renderGh();renderSrc();renderRepo();};
+  } else {
+    b.innerHTML=`<div class="gh-row">
+        <label class="theme-search"><svg viewBox="0 0 32 32"><path d="${I.search}"/></svg>
+          <input id="gh-token" type="password" placeholder="github personal access token (repo, read:user)"></label>
+        <button class="btn btn-install" id="gh-connect">Connect</button></div>
+      <div class="gh-hint">connect to pull your own public &amp; private repos, add custom catalogs, and search all of GitHub for norns scripts. matching scripts are tagged by source. <b>token stays on-device</b> (proxied through maiden's server, never bundled into the web app).</div>`;
+    b.querySelector('#gh-connect').onclick=()=>{
+      const t=b.querySelector('#gh-token').value.trim();
+      ghConnected = t.length>0 || true;   // demo: accept anything (even empty) to preview
+      LS.set('gh',{c:true,t:t});
+      renderGh();renderSrc();renderRepo();
+    };
+  }
+}
+function renderSrc(){
+  const el=document.getElementById('src-list');
+  el.innerHTML=SRC_ORDER.map(id=>{
+    const s=SRC[id]; const locked=s.auth&&!ghConnected;
+    const on=!!SRC_ON[id]&&!locked;
+    return `<div class="src-item ${locked?'locked':''}">
+      <span class="sw" style="background:${s.color}"></span>
+      <span><span class="nm">${s.name}</span> <span class="ty">${s.type}</span></span>
+      <span class="tog ${on?'on':''}" data-tsrc="${id}" ${locked?'style="opacity:.4;pointer-events:none"':''}></span></div>`;
+  }).join('');
+  el.querySelectorAll('[data-tsrc]').forEach(t=>t.onclick=()=>{
+    const id=t.dataset.tsrc; SRC_ON[id]=SRC_ON[id]?0:1;
+    if(SRC_ON[id]) srcFilter.add(id); else srcFilter.delete(id);
+    LS.set('srcon',SRC_ON);
+    renderSrc();renderRepo();
+  });
+}
+function openCfg(){ buildThemeGrid(document.getElementById('theme-filter').value); renderGh(); renderSrc();
+  document.getElementById('overlay').classList.add('on'); }
+function closeCfg(){ document.getElementById('overlay').classList.remove('on'); }
+
+/* ============ boot ============ */
+function boot(){
+  // editor
+  if(window.ace){
+    ace.config.set('basePath','https://cdn.jsdelivr.net/npm/ace-builds@1.32.6/src-min-noconflict');
+    editor=ace.edit('editor');
+    editor.setOptions({showPrintMargin:false,useWorker:false,highlightActiveLine:true});
+    editor.session.setMode('ace/mode/lua');
+    editor.setFontSize(13);
+  } else {
+    document.getElementById('editor').outerHTML='<textarea id="fallback" class="fallback mono" spellcheck="false"></textarea>';
+  }
+  wireTree(document.getElementById('tree'));
+  wireTree(document.getElementById('tree2'));
+  openFile('awake/awake.lua');
+  document.querySelector('#tree .row[data-file]')?.classList.add('sel');
+  // repl seed
+  replPrint(`<span class="sys">███▓▒░ MATRON ░▒▓███</span>`);
+  replPrint(`<span class="meta"># script load: /home/we/dust/code/awake/awake.lua</span>`);
+  replPrint(`loading engine: PolyPerc`);
+  // repl wiring
+  const inp=document.getElementById('replin');
+  inp.addEventListener('input',updateAC);
+  inp.addEventListener('keydown',e=>{
+    const ac=document.getElementById('ac');
+    if(ac.classList.contains('show')){
+      if(e.key==='ArrowDown'){e.preventDefault();acIdx=Math.min(acIdx+1,acItems.length-1);hlAC();return;}
+      if(e.key==='ArrowUp'){e.preventDefault();acIdx=Math.max(acIdx-1,0);hlAC();return;}
+      if(e.key==='Tab'){e.preventDefault();acceptAC(acIdx<0?0:acIdx);return;}
+      if(e.key==='Enter'){e.preventDefault();acceptAC(acIdx<0?0:acIdx);return;}
+      if(e.key==='Escape'){hideAC();return;}
+    } else if(e.key==='Enter'){ replSubmit(); }
+  });
+  document.getElementById('replsend').onclick=replSubmit;
+  document.querySelectorAll('#tgt button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#tgt button').forEach(x=>x.classList.remove('on'));b.classList.add('on');target=b.dataset.t;
+    document.getElementById('replin').focus();
+  });
+  // activity bar
+  document.getElementById('a-files').onclick=()=>{   // first-class Files view
+    document.getElementById('filesview').classList.contains('on') ? showMain() : showFiles();
+  };
+  // drag-and-drop upload onto the Files view
+  const fv=document.getElementById('filesview');
+  ['dragenter','dragover'].forEach(ev=>fv.addEventListener(ev,e=>{e.preventDefault();fv.classList.add('dragging');}));
+  ['dragleave','drop'].forEach(ev=>fv.addEventListener(ev,e=>{e.preventDefault(); if(ev==='drop'||e.target===fv) fv.classList.remove('dragging');}));
+  fv.addEventListener('drop',async e=>{ fv.classList.remove('dragging'); const items=await gatherDrop(e.dataTransfer); doUpload(items); });
+  document.getElementById('file-input').addEventListener('change',e=>{ const items=[...e.target.files].map(f=>({name:f.name,size:f.size,rel:f.name})); e.target.value=''; doUpload(items); });
+  document.getElementById('dir-input').addEventListener('change',e=>{ const items=[...e.target.files].map(f=>({name:f.name,size:f.size,rel:f.webkitRelativePath||f.name})); e.target.value=''; doUpload(items); });
+  // generic confirm dialog
+  document.getElementById('confirm-cancel').onclick=()=>{document.getElementById('confirm-overlay').classList.remove('on');_confirmYes=null;};
+  document.getElementById('confirm-overlay').addEventListener('click',e=>{if(e.target.id==='confirm-overlay'){e.currentTarget.classList.remove('on');_confirmYes=null;}});
+  document.getElementById('confirm-ok').onclick=()=>{document.getElementById('confirm-overlay').classList.remove('on'); const f=_confirmYes; _confirmYes=null; if(f) f();};
+  document.getElementById('a-repl').onclick=()=>{ showMain(); const md=document.getElementById('maiden');
+    if(md.dataset.edit==='editor') setEditView('combo'); const ri=document.getElementById('replin'); if(ri) ri.focus(); };
+  document.getElementById('a-proj').onclick=()=>{ document.getElementById('repoview').classList.contains('on')?showMain():showRepo(); };
+  document.getElementById('a-cfg').onclick=openCfg;
+  document.getElementById('m-cfg').onclick=openCfg;
+  // help (?) button → help modal
+  const helpOpen=()=>{ const hb=document.getElementById('help-build'); if(hb) hb.textContent='build '+BUILD; document.getElementById('help-overlay').classList.add('on'); };
+  document.getElementById('a-help').onclick=helpOpen;
+  document.getElementById('help-close').onclick=()=>document.getElementById('help-overlay').classList.remove('on');
+  document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target.id==='help-overlay')e.currentTarget.classList.remove('on');});
+  document.getElementById('m-menu').onclick=()=>maiden.classList.add('drawer-open');
+  document.getElementById('scrim').onclick=()=>maiden.classList.remove('drawer-open');
+  document.querySelectorAll('.mtab').forEach(t=>t.onclick=()=>setMobileView(t.dataset.mv));
+  // config
+  document.getElementById('cfg-close').onclick=closeCfg;
+  document.getElementById('overlay').addEventListener('click',e=>{if(e.target.id==='overlay')closeCfg();});
+  document.getElementById('theme-filter').addEventListener('input',e=>buildThemeGrid(e.target.value));
+  document.getElementById('fontsize').addEventListener('input',e=>{
+    const s=+e.target.value; document.getElementById('fontsize-v').textContent=s+'px';
+    document.documentElement.style.setProperty('--efont',s+'px'); if(editor)editor.setFontSize(s); LS.set('font',s);
+  });
+  document.querySelectorAll('#tabsize button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#tabsize button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    if(editor)editor.session.setTabSize(+b.dataset.n); LS.set('tab',+b.dataset.n);
+  });
+  document.querySelectorAll('#keymap button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#keymap button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    if(editor)editor.setKeyboardHandler(b.dataset.k==='ace'?'':'ace/keyboard/'+b.dataset.k); LS.set('keymap',b.dataset.k);
+  });
+  document.querySelectorAll('#uploadmode button').forEach(b=>{
+    b.classList.toggle('on', (b.dataset.u==='split')===splitUpload);
+    b.onclick=()=>{ splitUpload=b.dataset.u==='split'; LS.set('splitupload',splitUpload);
+      document.querySelectorAll('#uploadmode button').forEach(x=>x.classList.toggle('on',x===b));
+      if(document.getElementById('filesview').classList.contains('on')) renderFiles(); };
+  });
+  // size sim
+  const device=document.getElementById('device');
+  document.querySelectorAll('#size button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#size button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    device.style.setProperty('--dev-w',b.dataset.w+'px');
+    device.style.setProperty('--dev-h', b.dataset.h==='fill'?'calc(100dvh - 96px)':b.dataset.h+'px');
+    if(editor)setTimeout(()=>editor.resize(),260);
+  });
+  buildThemeGrid();
+  const bs=document.getElementById('buildstamp'); if(bs) bs.textContent=BUILD;
+  // editing layout: default split view, restore saved view + console height
+  maiden.dataset.edit = LS.get('editview','combo');
+  const rh=LS.get('replh',null); if(rh) document.documentElement.style.setProperty('--repl-h',rh);
+  initSplit();
+  loadCatalog();   // pull the real 350-script community catalog
+  // trust-gate modal wiring
+  document.getElementById('trust-cancel').onclick=()=>{document.getElementById('trust-overlay').classList.remove('on');trustPending=null;};
+  document.getElementById('trust-overlay').addEventListener('click',e=>{if(e.target.id==='trust-overlay'){e.currentTarget.classList.remove('on');trustPending=null;}});
+  document.getElementById('trust-ok').onclick=()=>{
+    if(document.getElementById('trust-remember').checked){
+      const w=Math.min(4,Math.max(1,+document.getElementById('trust-weeks').value||1));
+      LS.set('trustSnooze', Date.now()+w*7*24*3600*1000);
+    }
+    document.getElementById('trust-overlay').classList.remove('on');
+    if(trustPending){ if(trustPending.bulk) trustPending.bulk(); else afterTrust(trustPending.p,trustPending.btn); } trustPending=null;
+  };
+  // engine-conflict (B2) modal wiring
+  document.getElementById('eng-cancel').onclick=()=>{ document.getElementById('eng-overlay').classList.remove('on');
+    if(enginePending&&enginePending.btn){enginePending.btn.textContent='Install';enginePending.btn.disabled=false;} enginePending=null; };
+  document.getElementById('eng-overlay').addEventListener('click',e=>{ if(e.target.id==='eng-overlay'){ e.currentTarget.classList.remove('on'); enginePending=null; } });
+  document.getElementById('eng-anyway').onclick=()=>{ document.getElementById('eng-overlay').classList.remove('on');
+    if(enginePending) proceedInstall(enginePending.p,enginePending.btn); enginePending=null; };
+  document.getElementById('eng-rename-go').onclick=()=>{ document.getElementById('eng-overlay').classList.remove('on');
+    const nm=(document.getElementById('eng-rename').value||'').trim().replace(/[^A-Za-z0-9_]/g,'')||availableEngineName(shipEngine(enginePending.p));
+    if(enginePending) proceedInstall(enginePending.p,enginePending.btn,nm); enginePending=null; };
+  // ----- restore persisted preferences (localStorage) -----
+  const savedGh=LS.get('gh',null); if(savedGh&&savedGh.c) ghConnected=true;
+  const savedSrc=LS.get('srcon',null);
+  if(savedSrc){ SRC_ORDER.forEach(id=>{ SRC_ON[id]=savedSrc[id]?1:0; if(SRC_ON[id])srcFilter.add(id); else srcFilter.delete(id); }); }
+  // theme: follow OS unless a choice was saved
+  const mqDark=window.matchMedia('(prefers-color-scheme: dark)');
+  function systemDefault(){ return themeIndexByName(mqDark.matches?'maiden dark':'maiden light'); }
+  const savedTheme=LS.get('theme',null);
+  if(savedTheme){ userPickedTheme=true; applyTheme(themeIndexByName(savedTheme)); }
+  else applyTheme(systemDefault());
+  if(mqDark.addEventListener) mqDark.addEventListener('change',()=>{ if(!userPickedTheme) applyTheme(systemDefault()); });
+  // editor font: saved value, else a larger default on touch devices
+  let fsize=LS.get('font',null);
+  if(fsize==null && window.matchMedia('(pointer: coarse)').matches) fsize=15;
+  if(fsize!=null){
+    document.documentElement.style.setProperty('--efont',fsize+'px');
+    const fs=document.getElementById('fontsize'); if(fs){fs.value=fsize;document.getElementById('fontsize-v').textContent=fsize+'px';}
+    if(editor) editor.setFontSize(fsize);
+  }
+  const tsz=LS.get('tab',null);
+  if(tsz!=null){ if(editor)editor.session.setTabSize(tsz);
+    document.querySelectorAll('#tabsize button').forEach(x=>x.classList.toggle('on',+x.dataset.n===tsz)); }
+  const km=LS.get('keymap',null);
+  if(km){ if(editor)editor.setKeyboardHandler(km==='ace'?'':'ace/keyboard/'+km);
+    document.querySelectorAll('#keymap button').forEach(x=>x.classList.toggle('on',x.dataset.k===km)); }
+}
+function hlAC(){document.querySelectorAll('#ac .ac-item').forEach((it,i)=>it.classList.toggle('hl',i===acIdx));}
+window.addEventListener('load',boot);
+</script>
+</body>
+</html>

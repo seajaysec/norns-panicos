@@ -7,9 +7,11 @@
 static void test_defaults(void) {
     controls_t c;
     controls_defaults(&c);
-    assert(c.enc[0] == ENC_SRC_NONE);     /* E1 is D-pad-only */
-    assert(c.enc[1] == ENC_SRC_LSTICK);   /* E2 = L stick (+ D-pad up/down) */
-    assert(c.enc[2] == ENC_SRC_RSTICK);   /* E3 = R stick */
+    assert(c.lstick_enc[0] == 1);         /* left stick  L/R → E2 */
+    assert(c.lstick_enc[1] == -1);        /* left stick  U/D → unbound */
+    assert(c.rstick_enc[0] == 2);         /* right stick L/R → E3 */
+    assert(c.rstick_enc[1] == -1);        /* right stick U/D → unbound */
+    assert(c.lstick_y_invert == 0 && c.rstick_y_invert == 0);
     assert(c.dpad_enc[0] == 0);           /* D-pad left/right → E1 */
     assert(c.dpad_enc[1] == 1);           /* D-pad up/down     → E2 */
     assert(c.shoulder_enc == 0);          /* L1/R1 → E1 */
@@ -18,8 +20,8 @@ static void test_defaults(void) {
     assert(c.key_btn[1] == BTN_X);
     assert(c.key_btn[2] == BTN_A);
     assert(c.dpad_step == 2);
-    assert(c.accel == 1 && c.accel_delay == 18 && c.accel_ramp == 60 && c.accel_max == 5);
-    assert(c.stick_accel_delay == 30 && c.stick_accel_ramp == 110);
+    assert(c.accel == 1 && c.accel_delay == 18 && c.accel_ramp == 60 && c.accel_max == 4);
+    assert(c.stick_accel_delay == 40 && c.stick_accel_ramp == 150);
     assert(c.dpad_y_invert == 0);         /* globally upright; flipped per-context */
     printf("  PASS test_defaults\n");
 }
@@ -42,43 +44,46 @@ static void test_dpad_mapping(void) {
     printf("  PASS test_dpad_mapping\n");
 }
 
-static void test_stick_classifiers(void) {
+static void test_stick_routing(void) {
     controls_t c;
     controls_defaults(&c);
-    assert(controls_enc_is_stick(&c, 0) == 0);        /* none   */
-    assert(controls_enc_is_stick(&c, 1) == 1);        /* lstick */
-    assert(controls_enc_is_left_stick(&c, 1) == 1);
-    assert(controls_enc_is_left_stick(&c, 2) == 0);   /* rstick */
-    assert(controls_enc_is_stick_y(&c, 1) == 0);
-    c.enc[1] = ENC_SRC_LSTICK_Y;
-    assert(controls_enc_is_stick_y(&c, 1) == 1);
-    /* Combined-axis source: both-axes, left stick, not "y-only". */
-    c.enc[0] = ENC_SRC_LSTICK_XY;
-    assert(controls_enc_is_stick(&c, 0) == 1);
-    assert(controls_enc_is_stick_xy(&c, 0) == 1);
-    assert(controls_enc_is_left_stick(&c, 0) == 1);
-    assert(controls_enc_is_stick_y(&c, 0) == 0);
-    c.enc[2] = ENC_SRC_RSTICK_XY;
-    assert(controls_enc_is_stick_xy(&c, 2) == 1);
-    assert(controls_enc_is_left_stick(&c, 2) == 0);
-    /* Inverted-Y: reads the Y axis but is NOT "up = increment" (no negate),
-     * so down = increment. */
-    controls_defaults(&c);
-    c.enc[2] = ENC_SRC_RSTICK_Y_INV;
-    assert(controls_enc_is_stick(&c, 2) == 1);
-    assert(controls_enc_reads_y(&c, 2) == 1);     /* picks the Y axis */
-    assert(controls_enc_is_stick_y(&c, 2) == 0);  /* but no up-is-increment negate */
-    assert(controls_enc_is_left_stick(&c, 2) == 0);
-    c.enc[0] = ENC_SRC_LSTICK_Y_INV;
-    assert(controls_enc_is_left_stick(&c, 0) == 1);
-    assert(controls_enc_reads_y(&c, 0) == 1);
-    /* …and the parser accepts the -xy / -y-inv tokens (the [script:pixels] overlay). */
+    /* defaults: left X → E2, right X → E3, no Y routing */
+    assert(controls_stick_axis_enc(&c, 0, 0) == 1);   /* left  X → E2 */
+    assert(controls_stick_axis_enc(&c, 0, 1) == -1);  /* left  Y unbound */
+    assert(controls_stick_axis_enc(&c, 1, 0) == 2);   /* right X → E3 */
+    assert(controls_enc_has_stick(&c, 1) == 1);       /* E2 has a stick */
+    assert(controls_enc_has_stick(&c, 0) == 0);       /* E1 is D-pad-only */
+
+    /* per-axis routing: both left axes → E1, right Y inverted → E3 */
+    assert(controls_parse(&c,
+        "lstick_x = 1\nlstick_y = 1\nrstick_x = none\nrstick_y = 3\nrstick_y_invert = 1\n") == 5);
+    assert(c.lstick_enc[0] == 0 && c.lstick_enc[1] == 0);  /* both left axes → E1 */
+    assert(c.rstick_enc[0] == -1);                          /* right X unbound */
+    assert(c.rstick_enc[1] == 2 && c.rstick_y_invert == 1); /* right Y inv → E3 */
+    assert(controls_stick_y_inv(&c, 1) == 1);
+    assert(controls_stick_y_inv(&c, 0) == 0);
+    printf("  PASS test_stick_routing\n");
+}
+
+static void test_legacy_compat(void) {
+    /* Old per-encoder e1/e2/e3 = <source> translate to per-axis routes. */
+    controls_t c;
     controls_defaults(&c);
     assert(controls_parse(&c, "e1 = lstick-xy\ne2 = rstick\ne3 = rstick-y-inv\n") == 3);
-    assert(c.enc[0] == ENC_SRC_LSTICK_XY);
-    assert(c.enc[1] == ENC_SRC_RSTICK);
-    assert(c.enc[2] == ENC_SRC_RSTICK_Y_INV);
-    printf("  PASS test_stick_classifiers\n");
+    assert(c.lstick_enc[0] == 0 && c.lstick_enc[1] == 0);   /* both left → E1 (xy) */
+    assert(c.rstick_enc[0] == 1);                            /* right X → E2 */
+    assert(c.rstick_enc[1] == 2 && c.rstick_y_invert == 1);  /* right Y inv → E3 */
+
+    /* `e2 = none` clears whatever stick was on E2 (here the default left X). */
+    controls_defaults(&c);
+    assert(controls_parse(&c, "e2 = none\n") == 1);
+    assert(c.lstick_enc[0] == -1);
+
+    /* an unknown legacy source leaves routing untouched (no accidental unbind). */
+    controls_defaults(&c);
+    assert(controls_parse(&c, "e3 = wat\n") == 0);
+    assert(c.rstick_enc[0] == 2);                            /* E3 stick intact */
+    printf("  PASS test_legacy_compat\n");
 }
 
 static void test_stick_delta(void) {
@@ -97,14 +102,14 @@ static void test_stick_delta(void) {
 
 static void test_accel_factor(void) {
     controls_t c;
-    controls_defaults(&c);                /* dpad: delay 18 ramp 60; max 5 */
+    controls_defaults(&c);                /* dpad: delay 18 ramp 60; max 4 */
     int dd = c.accel_delay, dr = c.accel_ramp;
     assert(controls_accel_factor(&c, 0,  dd, dr) == 1.0f);   /* below delay → base */
     assert(controls_accel_factor(&c, 18, dd, dr) == 1.0f);   /* at delay    → base */
-    assert(controls_accel_factor(&c, 78, dd, dr) == 5.0f);   /* delay+ramp  → max  */
+    assert(controls_accel_factor(&c, 78, dd, dr) == 4.0f);   /* delay+ramp  → max  */
     float mid = controls_accel_factor(&c, 48, dd, dr);
-    assert(mid > 1.0f && mid < 5.0f);
-    assert(controls_accel_factor(&c, 1000, dd, dr) == 5.0f); /* clamped at max */
+    assert(mid > 1.0f && mid < 4.0f);
+    assert(controls_accel_factor(&c, 1000, dd, dr) == 4.0f); /* clamped at max */
     /* stick params ramp more gently: at the same held_frames, factor is lower */
     int sd = c.stick_accel_delay, sr = c.stick_accel_ramp;
     assert(controls_accel_factor(&c, 48, sd, sr) < mid);
@@ -153,8 +158,8 @@ static void test_parse_ignores_unknown(void) {
     controls_defaults(&c);
     int n = controls_parse(&c, "bogus = 7\ne2 = lstick\ne3 = wat\n");
     assert(n == 1);                  /* only e2 applied */
-    assert(c.enc[1] == ENC_SRC_LSTICK);
-    assert(c.enc[2] == ENC_SRC_RSTICK);  /* unchanged from default */
+    assert(c.lstick_enc[0] == 1);    /* e2 = lstick → left X → E2 */
+    assert(c.rstick_enc[0] == 2);    /* E3 stick unchanged from default */
     printf("  PASS test_parse_ignores_unknown\n");
 }
 
@@ -202,8 +207,8 @@ static void test_scheme_isolation(void) {
     controls_t c;
     controls_defaults(&c);
     controls_parse_scheme(&c, TWO_SCHEME_CONF, "sticks");
-    assert(c.enc[1] == ENC_SRC_LSTICK);
-    assert(c.enc[2] == ENC_SRC_RSTICK);
+    assert(c.lstick_enc[0] == 1);               /* e2 = lstick → left X → E2 */
+    assert(c.rstick_enc[0] == 2);               /* e3 = rstick → right X → E3 */
     assert(controls_enc_for_dpad(&c, 0) == 0);  /* left/right → E1 */
     assert(controls_enc_for_dpad(&c, 1) == 1);  /* up/down    → E2 */
     assert(controls_enc_for_shoulder(&c) == -1);
@@ -222,8 +227,8 @@ static void test_unknown_scheme_keeps_globals(void) {
     controls_defaults(&c);
     controls_parse_scheme(&c, TWO_SCHEME_CONF, "bogus");
     assert(c.dpad_step == 3);             /* global applied */
-    assert(c.enc[0] == ENC_SRC_NONE);     /* default layout intact */
-    assert(c.enc[1] == ENC_SRC_LSTICK);
+    assert(c.lstick_enc[0] == 1);         /* default layout intact */
+    assert(c.rstick_enc[0] == 2);
     assert(c.dpad_enc[0] == 0 && c.dpad_enc[1] == 1);
     printf("  PASS test_unknown_scheme_keeps_globals\n");
 }
@@ -290,7 +295,8 @@ int main(void) {
     test_defaults();
     test_dpad_lookup_default();
     test_dpad_mapping();
-    test_stick_classifiers();
+    test_stick_routing();
+    test_legacy_compat();
     test_stick_delta();
     test_accel_factor();
     test_parse_keys_and_tunables();

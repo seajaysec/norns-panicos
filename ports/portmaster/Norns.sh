@@ -34,88 +34,16 @@ fi
 echo "$LAUNCH_COUNT" > "$LAUNCH_COUNT_FILE"
 mkdir -p "$GAMEDIR/logs" "$GAMEDIR/cfg"
 
-# Control mapping config. norns-panicos reads $NORNS_PANICOS_CONF at launch;
-# seed a commented default the user can edit. The binary's built-in defaults
-# already match this template, so behaviour is identical if seeding is skipped.
+# Control mapping config. norns-panicos reads $NORNS_PANICOS_CONF at launch.
+# The editable file is controls.conf; the FACTORY DEFAULTS live in the read-only
+# controls.defaults.conf (shipped with the port, never written). Seed the
+# editable copy from the defaults on first run. The Norns Controls app restores
+# from the same defaults file.
 export NORNS_PANICOS_CONF="$GAMEDIR/cfg/controls.conf"
-if [ ! -f "$NORNS_PANICOS_CONF" ]; then
-    cat > "$NORNS_PANICOS_CONF" << 'CTRLCONF'
-# norns-panicos controls — edit and relaunch to remap.
-#
-# Pick a layout by name. Switch this one line to roll between schemes; add your
-# own [section] below and point `scheme` at it.
-scheme = sticks
-
-# ── Global settings (apply to every scheme) ────────────────────────────────
-# Keys (K1/K2/K3). Buttons: a b x y l1 r1 (comma-separated, multiple allowed).
-k1 = y
-k2 = x
-k3 = a
-dpad_step      = 2      # encoder delta per detent (2 = one patched-matron detent)
-stick_deadzone = 8192   # 0..32000; raise if a stick drifts at rest
-stick_throttle = 6      # base stick rate: emit ~every N frames (raise to slow)
-stick_invert   = 0      # 1 = flip every stick direction
-# Hold-to-accelerate: encoders spin faster the longer an input is held.
-# Button-pairs (D-pad/L1-R1/L2-R2) use accel_*; sticks use the gentler stick_accel_*.
-accel             = 1   # 0 = constant rate
-accel_delay       = 18  # button-pair: frames before ramping (~0.3s)
-accel_ramp        = 60  # button-pair: frames to reach top speed (~1s)
-stick_accel_delay = 30  # sticks: start later (~0.5s)
-stick_accel_ramp  = 110 # sticks: smoother, longer ramp
-accel_max         = 5   # peak speed multiplier
-
-# ── Schemes ────────────────────────────────────────────────────────────────
-# Each encoder is driven by an analog source AND/OR button-pairs:
-#   e1/e2/e3   = none | lstick | lstick-y | rstick | rstick-y   (stick source)
-#   dpad_x     = 1|2|3|none   D-pad left/right → that encoder
-#   dpad_y     = 1|2|3|none   D-pad up/down    → that encoder
-#   shoulders  = 1|2|3|none   L1/R1 pair       → that encoder
-#   triggers   = 1|2|3|none   L2/R2 pair       → that encoder
-
-# Default: dual-stick devices (RG35XX Pro / H).
-# E1 = D-pad L/R + L1/R1;  E2 = D-pad U/D + left stick;  E3 = L2/R2 + right stick.
-[sticks]
-e1 = none
-e2 = lstick
-e3 = rstick
-dpad_x    = 1
-dpad_y    = 2
-shoulders = 1
-triggers  = 3
-
-# D-pad only (works without analog sticks, e.g. RG36XX):
-#   up/down = E1, left/right = E2, L1/R1 = E3.
-[dpad]
-dpad_x    = 2
-dpad_y    = 1
-shoulders = 3
-triggers  = none
-
-# ── Context overlays ───────────────────────────────────────────────────────
-# Applied ON TOP of the active scheme while you're in that context. [menu] =
-# the norns system menu; [script:NAME] = while the script NAME is running
-# (NAME = its folder/short name). List only what differs from the scheme.
-#
-# In the menu the list scrolls "down = +", opposite to D-pad up — so flip the
-# D-pad up/down there (up = up), and let B mirror K2 for one-handed paging.
-[menu]
-k2            = x, b
-dpad_y_invert = 1
-
-# Example per-script override: koiboi2 wants its D-pad up/down inverted.
-[script:koiboi2]
-dpad_y_invert = 1
-
-# pixels: right stick steers E2 (L/R) + E3 (U/D, inverted to taste); left stick
-# drives E1 with both axes summed (push up OR right = +, down OR left = −).
-# D-pad/shoulders unchanged.
-[script:pixels]
-e1 = lstick-xy
-e2 = rstick
-e3 = rstick-y-inv
-
-# Note: Select = restart norns, Select+Start = quit. These are fixed.
-CTRLCONF
+NORNS_PANICOS_DEFAULTS="$GAMEDIR/cfg/controls.defaults.conf"
+chmod 0444 "$NORNS_PANICOS_DEFAULTS" 2>/dev/null
+if [ ! -f "$NORNS_PANICOS_CONF" ] && [ -f "$NORNS_PANICOS_DEFAULTS" ]; then
+    cp "$NORNS_PANICOS_DEFAULTS" "$NORNS_PANICOS_CONF"
 fi
 
 # Generate sclang_conf.yaml with absolute paths for this device.

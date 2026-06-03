@@ -39,7 +39,66 @@ Mnemonic: **A = enter, X = back, Y = home.**
 
 ---
 
-## Remapping (the config file)
+## Remapping on the device — the Norns Controls app
+
+The easiest way to remap is the **Norns Controls** tool — a separate entry in the
+**Ports** menu, beside Norns. It edits the same `controls.conf` with a gamepad-
+driven UI, so you never have to touch a text file or a computer.
+
+It edits three scopes:
+
+- **System (menu) controls** — the `[menu]` overlay (what applies in the norns
+  system menu).
+- **Global script controls** — the active scheme + keys, inherited by every
+  script.
+- **Per-script controls** — pick from your **installed scripts** (auto-detected),
+  split into **Customised** and **Inherits defaults**. Editing a script that
+  inherits creates an override for it; setting everything back to the defaults
+  removes the override and it goes back to inheriting.
+
+The editor lists **every input axis as its own row** — D-pad L/R and U/D, each
+stick's L/R and U/D, and the L1·R1 / L2·R2 pairs — and you route each one to an
+encoder (**E1/E2/E3** or off). Two axes of one stick can go to two different
+encoders, and both axes to the *same* encoder (they sum). In an editor screen:
+
+- **D-pad/stick** moves; **◄ ►** set the selected row's encoder.
+- **Y** flips a stick **U/D** row's direction (the `⟲` invert marker).
+- **A** on a key row opens the **button picker**; on an overlay row, **A** sets it
+  back to **inherit**.
+- **X** = **input detection**: press a physical control to jump to its row (or, on
+  a key row, press a button to bind it).
+- **Start** applies the screen's edits to memory; **B** backs out (prompting to
+  discard or apply if you have unsaved changes). Nothing touches the file until
+  you pick **Save to file** on the main menu; exiting unsaved prompts you.
+
+**Inheritance is the safety net.** In the menu/script scopes, any row you don't
+override is shown **dimmed** with a `↳ inherits` tag and carries the global
+default's value; overridden rows are bright with a `● override` badge. So you
+can't strand yourself by "unmapping" something — it just falls back to the parent.
+(If you somehow override *everything* to off, a non-blocking ⚠ warns you.)
+Acceleration/deadzone tunables aren't exposed and are preserved untouched on save.
+
+**Copy controls between scripts:** in the per-script list, **X** → pick a source
+script → its overrides are copied onto the selected script (which keeps
+inheriting the base for everything the source didn't override).
+
+### Factory defaults
+
+The shipped baseline lives in a separate **read-only** file,
+`<port>/norns/cfg/controls.defaults.conf`. The Norns port copies it to
+`controls.conf` on first run, and the tool restores from it — but nothing in the
+port ever writes to it (the editor only ever writes `controls.conf`):
+
+- **Restore all defaults** (main menu, with confirmation) replaces the whole
+  working set with the factory baseline. As always, nothing hits disk until you
+  pick **Save to file**.
+
+The defaults file ships `chmod 0444`. That stops casual edits but not `root`
+(which the handheld runs as); the real guarantee is that no port code writes it.
+For OS-hard immutability you can `chattr +i` it on the device's ext4 — at the
+cost of needing `chattr -i` before any future update can replace it.
+
+## Remapping by hand (the config file)
 
 Controls are read from a text file at launch — no rebuild needed. On a
 PortMaster install it lives at:
@@ -50,7 +109,8 @@ PortMaster install it lives at:
 
 The launcher seeds a commented default there on first run. Edit it and relaunch.
 (The path can be overridden with the `NORNS_PANICOS_CONF` environment variable;
-if no file is found, the built-in defaults above are used.)
+if no file is found, the built-in defaults above are used.) The Norns Controls
+app above writes this same file, so the two are interchangeable.
 
 ### Named schemes
 
@@ -75,20 +135,27 @@ accel_ramp  = 45        # frames to reach top speed (~0.75s)
 accel_max   = 6         # peak speed multiplier
 
 [sticks]               # default — dual-stick devices
-e1 = dpad-x            #   D-pad left/right (up/down unused)
-e2 = lstick
-e3 = rstick
+dpad_x   = 1           #   D-pad L/R   → E1
+dpad_y   = 2           #   D-pad U/D   → E2
+lstick_x = 2           #   left stick  L/R → E2
+rstick_x = 3           #   right stick L/R → E3
+shoulders = 1          #   L1/R1 → E1
+triggers  = 3          #   L2/R2 → E3
 
 [dpad]                 # D-pad only — no analog sticks needed
-e1 = dpad-y            #   up/down    → E1
-e2 = dpad-x            #   left/right → E2
-e3 = shoulders         #   L1 = −, R1 = +
+dpad_y    = 1          #   up/down    → E1
+dpad_x    = 2          #   left/right → E2
+shoulders = 3          #   L1 = −, R1 = +
 ```
 
 - Lines **before the first `[section]`** are global and apply to whatever scheme
-  is active. A scheme section only needs to list its encoders.
-- **Encoder sources:** `dpad`, `dpad-x`, `dpad-y`, `lstick`, `lstick-y`,
-  `rstick`, `rstick-y`, `shoulders`, `none`.
+  is active. A scheme section only needs to list the inputs it routes.
+- **Routing keys** (each = `1|2|3|none`): `dpad_x`, `dpad_y`, `lstick_x`,
+  `lstick_y`, `rstick_x`, `rstick_y`, `shoulders`, `triggers`. The two U/D stick
+  routes also take `lstick_y_invert` / `rstick_y_invert` (`0|1`). Both axes of one
+  stick on the same encoder sum (up OR right = +).
+- *(Legacy `e1|e2|e3 = lstick|rstick-y-inv|…` per-encoder lines still load via a
+  compat shim, so old configs keep working.)*
 - **Key buttons:** `a b x y l1 r1` (comma-separated, multiple allowed per key).
 - To add your own layout, drop in a new `[my-layout]` section and set
   `scheme = my-layout`.
@@ -129,10 +196,13 @@ dpad_y_invert = 1      #   this script wants its D-pad up/down inverted
 
 ### Example tweaks
 
-- **Encoders feel backwards:** `stick_invert = 1`.
+- **Encoders feel backwards:** `stick_invert = 1` (all sticks), or flip one stick's
+  U/D with `lstick_y_invert = 1` / `rstick_y_invert = 1`.
 - **Stick drifts at rest:** raise `stick_deadzone` (try `12000`).
-- **Use vertical sticks instead of horizontal:** `e2 = lstick-y`, `e3 = rstick-y`.
-- **Put E2 on the right stick, E3 on the left:** `e2 = rstick`, `e3 = lstick`.
+- **Use a stick's U/D instead of L/R:** route `lstick_y`/`rstick_y` and clear
+  `lstick_x`/`rstick_x` (`= none`).
+- **Both right-stick axes on two encoders (pixels-style):** `rstick_x = 2`,
+  `rstick_y = 3`.
 - **Bind a shoulder to a key:** `k1 = y, b, l1`.
 
 ### Stickless devices (RG36XX and other D-pad-only handhelds)
@@ -142,9 +212,9 @@ drives all three encoders without sticks:
 
 ```ini
 [dpad]
-e1 = dpad-y      # up/down    → E1
-e2 = dpad-x      # left/right → E2
-e3 = shoulders   # L1 = −, R1 = +
+dpad_y    = 1    # up/down    → E1
+dpad_x    = 2    # left/right → E2
+shoulders = 3    # L1 = −, R1 = +
 ```
 
 E3 lands on the L1/R1 shoulders (stepwise, not a smooth knob), but every encoder
@@ -154,8 +224,8 @@ has a home and there's no hold-to-select modality.
 
 ## Troubleshooting
 
-- **"A stick does nothing."** Check `e2`/`e3` point at `lstick`/`rstick`, and
-  that `stick_deadzone` isn't set absurdly high.
+- **"A stick does nothing."** Check `lstick_x`/`rstick_x` (or `…_y`) are routed
+  to an encoder (`1|2|3`) and `stick_deadzone` isn't set absurdly high.
 - **"The screen froze / no sound."** Tap **Select** to restart norns.
 - **"How do I quit?"** **Select + Start**.
 - **Confirm what loaded:** the log (`<port>/norns/logs/norns.log`) prints

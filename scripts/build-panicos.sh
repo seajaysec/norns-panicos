@@ -66,6 +66,7 @@ docker run --rm \
     sh -c '
 set -e
 SDL_FLAGS=$(pkg-config --cflags --libs sdl2    2>/dev/null || echo "-lSDL2")
+TTF_FLAGS=$(pkg-config --cflags --libs SDL2_ttf 2>/dev/null || echo "-lSDL2_ttf")
 JACK_FLAGS=$(pkg-config --cflags --libs jack   2>/dev/null || echo "-ljack")
 USB_FLAGS=$(pkg-config --cflags --libs libusb-1.0 2>/dev/null || echo "-lusb-1.0")
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-panicos.c       -o build/norns-panicos       $SDL_FLAGS -lpthread -lm
@@ -73,6 +74,8 @@ ${CROSS_PREFIX}gcc -O2 -Wall src/norns-input-bridge.c  -o build/norns-input-brid
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-push2-display.c -o build/norns-push2-display $USB_FLAGS
 # norns-monome-bridge: real monome grid over its serial port (mext; no extra deps).
 ${CROSS_PREFIX}gcc -O2 -Wall src/norns-monome-bridge.c -o build/norns-monome-bridge
+# norns-controls-gui: standalone on-device controls remapper (SDL2 + SDL2_ttf).
+${CROSS_PREFIX}gcc -O2 -Wall src/norns-controls-gui.c  -o build/norns-controls-gui  $SDL_FLAGS $TTF_FLAGS -lm
 echo "[1/4] host binaries OK"
 '
 
@@ -162,6 +165,7 @@ if [ -f "$_menu" ]; then
     echo "  norns context exported to /tmp/norns-context"
 fi
 
+mkdir -p "$NORNS_DATA/norns/lua/lib"
 cp "$REPO_ROOT/lua/pad.lua" "$NORNS_DATA/norns/lua/lib/pad.lua"
 echo "  Installed pad.lua (native gamepad wrapper) into norns lua/lib"
 
@@ -202,6 +206,19 @@ SCCONF
 cp "$REPO_ROOT/ports/portmaster/Norns.sh"    "$DIST/"
 cp "$REPO_ROOT/ports/portmaster/control.txt" "$DIST/"
 
+# Factory defaults (read-only): Norns.sh seeds controls.conf from it; the Norns
+# Controls app restores from it. Never written by either.
+cp "$REPO_ROOT/ports/portmaster/controls.defaults.conf" "$DIST/norns/cfg/controls.defaults.conf"
+chmod 0444 "$DIST/norns/cfg/controls.defaults.conf"
+
+# Standalone "Norns Controls" port — on-device controls remapper (its own Ports
+# entry beside Norns; edits the same norns/cfg/controls.conf).
+cp "$REPO_ROOT/ports/portmaster/Norns Controls.sh" "$DIST/"
+mkdir -p "$DIST/NornsControls/assets"
+cp "$REPO_ROOT/build/norns-controls-gui"                       "$DIST/NornsControls/"
+cp "$REPO_ROOT/ports/portmaster/NornsControls/assets/font.ttf" "$DIST/NornsControls/assets/"
+chmod +x "$DIST/NornsControls/norns-controls-gui" "$DIST/Norns Controls.sh"
+
 # ── 5. Package ───────────────────────────────────────────────
 # PortMaster expects Norns.sh + control.txt + norns/ at the ZIP ROOT so they
 # extract straight into /roms/ports/. Zip the staging CONTENTS, not the staging
@@ -211,7 +228,8 @@ echo ""
 echo "--- Packaging ---"
 mkdir -p "$REPO_ROOT/dist"
 rm -f "$REPO_ROOT/dist/norns-panicos.zip"
-( cd "$DIST" && zip -rq "$REPO_ROOT/dist/norns-panicos.zip" Norns.sh control.txt norns )
+( cd "$DIST" && zip -rq "$REPO_ROOT/dist/norns-panicos.zip" \
+      Norns.sh control.txt norns "Norns Controls.sh" NornsControls )
 
 echo ""
 echo "=== Build complete ==="

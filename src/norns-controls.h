@@ -17,26 +17,30 @@
  *     dpad_step      = 2
  *     stick_deadzone = 8192
  *
- *     [sticks]               # D-pad=E1, left stick=E2, right stick=E3
- *     e1 = dpad
- *     e2 = lstick
- *     e3 = rstick
+ *     [sticks]               # left stick=E2, right stick=E3, D-pad=E1
+ *     lstick_x = 2
+ *     rstick_x = 3
  *
  *     [dpad]                 # up/down=E1, left/right=E2, L1/R1=E3 (no sticks)
- *     e1 = dpad-y
- *     e2 = dpad-x
- *     e3 = shoulders
+ *     dpad_y = 1
+ *     dpad_x = 2
+ *     shoulders = 3
  *
  * Lines before the first [section] are "global". The selected [scheme] section
  * is applied on top of globals. A flat file with no sections still works (every
  * line is global) — backward-compatible. Missing file / unknown scheme → the
  * built-in defaults (the `sticks` layout).
  *
- * Encoder sources: dpad | dpad-x | dpad-y | shoulders | none
- *                  lstick | lstick-y | lstick-y-inv | lstick-xy
- *                  rstick | rstick-y | rstick-y-inv | rstick-xy
- *   (…-y up = increment; …-y-inv down = increment; …-xy sums both axes so up OR
- *    right increments, down OR left decrements)
+ * Every input is routed PER AXIS to an encoder (1|2|3|none), so two axes of one
+ * stick can drive two different encoders, and both axes of one stick can drive
+ * the same encoder (they sum: up OR right = +). Routing keys:
+ *   dpad_x  dpad_y                       D-pad left/right, up/down
+ *   lstick_x  lstick_y  lstick_y_invert  left stick  L/R, U/D (+ flip U/D)
+ *   rstick_x  rstick_y  rstick_y_invert  right stick L/R, U/D (+ flip U/D)
+ *   shoulders                            L1 = −, R1 = +
+ *   triggers                             L2 = −, R2 = +
+ * (Legacy e1|e2|e3 = lstick|lstick-y|lstick-xy|rstick-y-inv|… still load via a
+ *  compat shim that translates them into the per-axis routes above.)
  * Key buttons:     a b x y l1 r1   (comma-separated, multiple per key)
  * Tunables:        dpad_step, stick_deadzone, stick_throttle, stick_invert
  */
@@ -48,21 +52,6 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
-
-/* Analog/discrete source feeding one norns encoder. The D-pad is NOT an encoder
- * source — it is an independent 2-axis input mapped via dpad_x/dpad_y (so a
- * D-pad axis and a stick can drive the same encoder). */
-typedef enum {
-    ENC_SRC_NONE = 0,
-    ENC_SRC_LSTICK,      /* left stick X  (analog, velocity-scaled)           */
-    ENC_SRC_LSTICK_Y,    /* left stick Y  (up = increment)                    */
-    ENC_SRC_RSTICK,      /* right stick X                                     */
-    ENC_SRC_RSTICK_Y,    /* right stick Y (up = increment)                    */
-    ENC_SRC_LSTICK_XY,   /* left stick both axes summed (up+right = +)        */
-    ENC_SRC_RSTICK_XY,   /* right stick both axes summed (up+right = +)       */
-    ENC_SRC_LSTICK_Y_INV,/* left stick Y, inverted (down = increment)         */
-    ENC_SRC_RSTICK_Y_INV,/* right stick Y, inverted (down = increment)        */
-} enc_source_t;
 
 /* Buttons bindable to keys (bitmask). L2/R2 are analog triggers, not buttons,
  * so they are intentionally absent. */
@@ -76,13 +65,16 @@ enum {
 };
 
 typedef struct {
-    enc_source_t enc[3];      /* analog (stick) source for E1, E2, E3          */
-    /* Button-pair inputs → encoder index (0-2, -1=none), each a −/+ pair driven
-     * with the same tap+accel logic. The D-pad is two pairs (x: left/right,
-     * y: up/down); shoulders = L1/R1; triggers = L2/R2. */
-    int8_t       dpad_enc[2]; /* [0]=left/right, [1]=up/down */
-    int8_t       shoulder_enc;/* L1 = −, R1 = +              */
-    int8_t       trigger_enc; /* L2 = −, R2 = +              */
+    /* Every input axis/pair routes to an encoder index (0-2, -1 = none). The
+     * D-pad and both sticks are each two axes; both axes of one stick may target
+     * the same encoder (they sum). shoulders = L1/R1, triggers = L2/R2. */
+    int8_t       dpad_enc[2];   /* [0]=L/R, [1]=U/D                            */
+    int8_t       lstick_enc[2]; /* [0]=L/R (X), [1]=U/D (Y)                    */
+    int8_t       rstick_enc[2];
+    int          lstick_y_invert; /* flip left stick U/D (down = increment)   */
+    int          rstick_y_invert;
+    int8_t       shoulder_enc;  /* L1 = −, R1 = +              */
+    int8_t       trigger_enc;   /* L2 = −, R2 = +              */
     uint8_t      key_btn[3];  /* button bitmask mapped to K1, K2, K3           */
     int          dpad_step;   /* encoder delta per emitted detent              */
     int          stick_deadzone;
@@ -117,11 +109,14 @@ typedef struct {
 /* ── Defaults: the `sticks` scheme ───────────────────────────────────────────
  * D-pad left/right → E1; D-pad up/down + left stick → E2; right stick → E3. */
 static inline void controls_defaults(controls_t *c) {
-    c->enc[0] = ENC_SRC_NONE;        /* E1 is D-pad-only (no analog source) */
-    c->enc[1] = ENC_SRC_LSTICK;
-    c->enc[2] = ENC_SRC_RSTICK;
     c->dpad_enc[0] = 0;              /* D-pad left/right → E1 */
     c->dpad_enc[1] = 1;              /* D-pad up/down     → E2 (mirrors the L stick) */
+    c->lstick_enc[0] = 1;            /* left stick L/R  → E2 */
+    c->lstick_enc[1] = -1;           /* left stick U/D  → unbound */
+    c->rstick_enc[0] = 2;            /* right stick L/R → E3 */
+    c->rstick_enc[1] = -1;           /* right stick U/D → unbound */
+    c->lstick_y_invert = 0;
+    c->rstick_y_invert = 0;
     c->shoulder_enc = 0;             /* L1/R1 → E1 (alt for the D-pad) */
     c->trigger_enc  = 2;             /* L2/R2 → E3 (alt for the R stick) */
     c->key_btn[0] = BTN_Y;           /* K1 = Y */
@@ -134,9 +129,9 @@ static inline void controls_defaults(controls_t *c) {
     c->accel       = 1;              /* hold to spin fast */
     c->accel_delay = 18;             /* D-pad: ~0.3s before ramping */
     c->accel_ramp  = 60;             /* D-pad: ~1s to reach peak */
-    c->stick_accel_delay = 30;       /* sticks: start later (~0.5s) */
-    c->stick_accel_ramp  = 110;      /* sticks: smoother, longer ramp (~1.8s) */
-    c->accel_max   = 5;              /* up to 5x faster when held */
+    c->stick_accel_delay = 40;       /* sticks: start later (~0.7s) */
+    c->stick_accel_ramp  = 150;      /* sticks: long, gentle ramp (~2.5s) */
+    c->accel_max   = 4;              /* up to 4x faster when held */
     c->dpad_y_invert = 0;            /* off by default; [menu]/[script:*] flip it */
     c->native_mode = 0;              /* emulation; [script:*] overlay opts in */
 }
@@ -158,38 +153,20 @@ static inline int controls_enc_for_trigger(const controls_t *c) {
     return c->trigger_enc;
 }
 
-/* True if encoder i is driven by an analog stick. */
-static inline int controls_enc_is_stick(const controls_t *c, int i) {
-    enc_source_t s = c->enc[i];
-    return s == ENC_SRC_LSTICK    || s == ENC_SRC_LSTICK_Y     ||
-           s == ENC_SRC_RSTICK    || s == ENC_SRC_RSTICK_Y     ||
-           s == ENC_SRC_LSTICK_XY || s == ENC_SRC_RSTICK_XY    ||
-           s == ENC_SRC_LSTICK_Y_INV || s == ENC_SRC_RSTICK_Y_INV;
+/* Encoder (0-2) a stick axis drives, or -1 if unbound. stick: 0=left,1=right.
+ * axis: 0=X (L/R), 1=Y (U/D). */
+static inline int controls_stick_axis_enc(const controls_t *c, int stick, int axis) {
+    return stick ? c->rstick_enc[axis] : c->lstick_enc[axis];
 }
-
-/* True if encoder i sums BOTH axes of its stick (up+right increment). */
-static inline int controls_enc_is_stick_xy(const controls_t *c, int i) {
-    return c->enc[i] == ENC_SRC_LSTICK_XY || c->enc[i] == ENC_SRC_RSTICK_XY;
+/* Whether a stick's U/D axis is inverted (down = increment). */
+static inline int controls_stick_y_inv(const controls_t *c, int stick) {
+    return stick ? c->rstick_y_invert : c->lstick_y_invert;
 }
-
-/* True if encoder i reads the vertical (Y) axis with up = increment (so the
- * host negates SDL's up-is-negative axis). Inverted-Y sources are NOT included —
- * they intentionally keep the raw axis so down = increment. */
-static inline int controls_enc_is_stick_y(const controls_t *c, int i) {
-    return c->enc[i] == ENC_SRC_LSTICK_Y || c->enc[i] == ENC_SRC_RSTICK_Y;
-}
-
-/* True if encoder i reads the vertical (Y) axis at all (normal or inverted) —
- * used only to pick the Y axis; direction is decided by is_stick_y. */
-static inline int controls_enc_reads_y(const controls_t *c, int i) {
-    return controls_enc_is_stick_y(c, i) ||
-           c->enc[i] == ENC_SRC_LSTICK_Y_INV || c->enc[i] == ENC_SRC_RSTICK_Y_INV;
-}
-
-/* True if encoder i reads the LEFT stick (vs right). */
-static inline int controls_enc_is_left_stick(const controls_t *c, int i) {
-    return c->enc[i] == ENC_SRC_LSTICK || c->enc[i] == ENC_SRC_LSTICK_Y ||
-           c->enc[i] == ENC_SRC_LSTICK_XY || c->enc[i] == ENC_SRC_LSTICK_Y_INV;
+/* True if any stick axis is routed to encoder i (for callers that want a quick
+ * "does a stick drive this encoder" check). */
+static inline int controls_enc_has_stick(const controls_t *c, int i) {
+    return c->lstick_enc[0] == i || c->lstick_enc[1] == i ||
+           c->rstick_enc[0] == i || c->rstick_enc[1] == i;
 }
 
 /* Velocity-scaled encoder delta for a raw SDL axis value (-32768..32767),
@@ -263,17 +240,31 @@ static inline int controls__section(char *line, char *name, size_t n) {
     return 1;
 }
 
-static inline enc_source_t controls__parse_enc(const char *tok) {
-    if (!strcmp(tok, "none"))      return ENC_SRC_NONE;
-    if (!strcmp(tok, "lstick") || !strcmp(tok, "lstick-x")) return ENC_SRC_LSTICK;
-    if (!strcmp(tok, "lstick-y"))  return ENC_SRC_LSTICK_Y;
-    if (!strcmp(tok, "lstick-y-inv")) return ENC_SRC_LSTICK_Y_INV;
-    if (!strcmp(tok, "lstick-xy")) return ENC_SRC_LSTICK_XY;
-    if (!strcmp(tok, "rstick") || !strcmp(tok, "rstick-x")) return ENC_SRC_RSTICK;
-    if (!strcmp(tok, "rstick-y"))  return ENC_SRC_RSTICK_Y;
-    if (!strcmp(tok, "rstick-y-inv")) return ENC_SRC_RSTICK_Y_INV;
-    if (!strcmp(tok, "rstick-xy")) return ENC_SRC_RSTICK_XY;
-    return (enc_source_t)-1;   /* unknown */
+/* Legacy compat: translate an old per-encoder `e<N> = <source>` assignment into
+ * the per-axis routes. First clears any stick axis already targeting encoder e
+ * (so e's stick becomes exactly what the token says), then sets the new route.
+ * Returns 1 if the token was recognised. */
+static inline int controls__legacy_enc(controls_t *c, int e, const char *tok) {
+    /* validate before mutating, so an unknown token leaves routing untouched */
+    if (strcmp(tok, "none") && strcmp(tok, "lstick") && strcmp(tok, "lstick-x") &&
+        strcmp(tok, "lstick-y") && strcmp(tok, "lstick-y-inv") && strcmp(tok, "lstick-xy") &&
+        strcmp(tok, "rstick") && strcmp(tok, "rstick-x") && strcmp(tok, "rstick-y") &&
+        strcmp(tok, "rstick-y-inv") && strcmp(tok, "rstick-xy"))
+        return 0;
+    for (int a = 0; a < 2; a++) {
+        if (c->lstick_enc[a] == e) c->lstick_enc[a] = -1;
+        if (c->rstick_enc[a] == e) c->rstick_enc[a] = -1;
+    }
+    if (!strcmp(tok, "none"))                                 return 1;
+    if (!strcmp(tok, "lstick") || !strcmp(tok, "lstick-x"))   { c->lstick_enc[0] = (int8_t)e; return 1; }
+    if (!strcmp(tok, "lstick-y"))     { c->lstick_enc[1] = (int8_t)e; c->lstick_y_invert = 0; return 1; }
+    if (!strcmp(tok, "lstick-y-inv")) { c->lstick_enc[1] = (int8_t)e; c->lstick_y_invert = 1; return 1; }
+    if (!strcmp(tok, "lstick-xy"))    { c->lstick_enc[0] = (int8_t)e; c->lstick_enc[1] = (int8_t)e; return 1; }
+    if (!strcmp(tok, "rstick") || !strcmp(tok, "rstick-x"))   { c->rstick_enc[0] = (int8_t)e; return 1; }
+    if (!strcmp(tok, "rstick-y"))     { c->rstick_enc[1] = (int8_t)e; c->rstick_y_invert = 0; return 1; }
+    if (!strcmp(tok, "rstick-y-inv")) { c->rstick_enc[1] = (int8_t)e; c->rstick_y_invert = 1; return 1; }
+    if (!strcmp(tok, "rstick-xy"))    { c->rstick_enc[0] = (int8_t)e; c->rstick_enc[1] = (int8_t)e; return 1; }
+    return 0;
 }
 
 /* Single button token → bit, or 0 if unknown. */
@@ -311,15 +302,14 @@ static inline int8_t controls__parse_dpad_target(const char *val) {
 /* Apply one "key = val" assignment to c. Returns 1 if recognised, 0 otherwise. */
 static inline int controls__assign(controls_t *c, const char *key, char *val) {
     if (key[0] == 'e' && key[1] >= '1' && key[1] <= '3' && key[2] == '\0') {
+        /* legacy per-encoder stick source → per-axis routes (compat shim) */
         char tok[64];
         strncpy(tok, val, sizeof(tok) - 1); tok[sizeof(tok) - 1] = '\0';
         controls__canon(controls__trim(tok));
-        enc_source_t src = controls__parse_enc(tok);
-        if (src == (enc_source_t)-1) {
+        if (!controls__legacy_enc(c, key[1] - '1', tok)) {
             fprintf(stderr, "controls: unknown encoder source '%s' for %s\n", tok, key);
             return 0;
         }
-        c->enc[key[1] - '1'] = src;
         return 1;
     }
     if (key[0] == 'k' && key[1] >= '1' && key[1] <= '3' && key[2] == '\0') {
@@ -337,10 +327,16 @@ static inline int controls__assign(controls_t *c, const char *key, char *val) {
     if (!strcmp(key, "accel-delay"))    { c->accel_delay = controls__clamp(atoi(val), 0, 600);     return 1; }
     if (!strcmp(key, "accel-ramp"))     { c->accel_ramp  = controls__clamp(atoi(val), 1, 600);     return 1; }
     if (!strcmp(key, "accel-max"))      { c->accel_max   = controls__clamp(atoi(val), 1, 64);      return 1; }
-    if (!strcmp(key, "dpad-x"))         { c->dpad_enc[0]  = controls__parse_dpad_target(val);       return 1; }
-    if (!strcmp(key, "dpad-y"))         { c->dpad_enc[1]  = controls__parse_dpad_target(val);       return 1; }
-    if (!strcmp(key, "shoulders"))      { c->shoulder_enc = controls__parse_dpad_target(val);       return 1; }
-    if (!strcmp(key, "triggers"))       { c->trigger_enc  = controls__parse_dpad_target(val);       return 1; }
+    if (!strcmp(key, "dpad-x"))         { c->dpad_enc[0]   = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "dpad-y"))         { c->dpad_enc[1]   = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "lstick-x"))       { c->lstick_enc[0] = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "lstick-y"))       { c->lstick_enc[1] = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "rstick-x"))       { c->rstick_enc[0] = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "rstick-y"))       { c->rstick_enc[1] = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "lstick-y-invert")) { c->lstick_y_invert = atoi(val) ? 1 : 0;                  return 1; }
+    if (!strcmp(key, "rstick-y-invert")) { c->rstick_y_invert = atoi(val) ? 1 : 0;                  return 1; }
+    if (!strcmp(key, "shoulders"))      { c->shoulder_enc  = controls__parse_dpad_target(val);      return 1; }
+    if (!strcmp(key, "triggers"))       { c->trigger_enc   = controls__parse_dpad_target(val);      return 1; }
     if (!strcmp(key, "stick-accel-delay")) { c->stick_accel_delay = controls__clamp(atoi(val), 0, 600); return 1; }
     if (!strcmp(key, "stick-accel-ramp"))  { c->stick_accel_ramp  = controls__clamp(atoi(val), 1, 600); return 1; }
     if (!strcmp(key, "dpad-y-invert"))  { c->dpad_y_invert = atoi(val) ? 1 : 0;                       return 1; }

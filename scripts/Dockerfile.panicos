@@ -5,6 +5,7 @@ RUN dpkg --add-architecture arm64 && \
         gcc-aarch64-linux-gnu \
         make \
         libsdl2-dev:arm64 \
+        libsdl2-ttf-dev:arm64 \
         libjack-jackd2-dev:arm64 \
         libusb-1.0-0-dev:arm64 \
         pkg-config \
