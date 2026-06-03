@@ -162,6 +162,9 @@ if [ -f "$_menu" ]; then
     echo "  norns context exported to /tmp/norns-context"
 fi
 
+cp "$REPO_ROOT/lua/pad.lua" "$NORNS_DATA/norns/lua/lib/pad.lua"
+echo "  Installed pad.lua (native gamepad wrapper) into norns lua/lib"
+
 
 # Starter scripts (cloned from source)
 echo "  Cloning starter scripts..."
