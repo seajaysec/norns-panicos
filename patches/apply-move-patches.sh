@@ -645,6 +645,108 @@ else:
 "
 fi
 
+# ── 8c. Register virtual HID gamepad (norns-panicos native pad) ──
+# In-memory libevdev device fed by NORNS_HID_FIFO; matron's stock hid add/event
+# path + core/hid.lua are reused unchanged. See patches/hid-virtual.patch.
+echo "  Patching device_hid.c + main.c (virtual HID gamepad)"
+
+# (a) Append the virtual init + FIFO-reader start to device_hid.c.
+if ! grep -q "dev_hid_make_virtual" matron/src/device/device_hid.c; then
+cat >> matron/src/device/device_hid.c << 'HIDEOF'
+
+/* ── norns-panicos: virtual gamepad (in-memory libevdev, fed by NORNS_HID_FIFO) ──
+ * Registered from main.c via dev_list_add(DEV_TYPE_HID, NULL, ...). A NULL path
+ * means "virtual": build the device in memory and stream evdev frames from the
+ * FIFO instead of reading /dev/input. Reuses this file's static add_types/
+ * add_codes/handle_event, so the stock hid_add/hid_event path is unchanged. */
+#include <unistd.h>
+
+static void *dev_hid_virtual_start(void *self) {
+    struct dev_hid *di = (struct dev_hid *)self;
+    const char *path = getenv("NORNS_HID_FIFO");
+    if (path == NULL) { return NULL; }
+    int fd = open(path, O_RDONLY);          /* blocks until the host opens write end */
+    if (fd < 0) { return NULL; }
+    uint8_t f[5];
+    for (;;) {
+        ssize_t got = 0;                    /* read exactly 5 bytes (robust to splits) */
+        while (got < 5) {
+            ssize_t r = read(fd, f + got, 5 - got);
+            if (r <= 0) { close(fd); return NULL; }
+            got += r;
+        }
+        struct input_event ie;
+        memset(&ie, 0, sizeof(ie));
+        ie.type  = (uint16_t)f[0];
+        ie.code  = (uint16_t)(f[1] | (f[2] << 8));
+        ie.value = (int16_t)(f[3] | (f[4] << 8));
+        handle_event(di, &ie);              /* posts EVENT_HID_EVENT */
+    }
+}
+
+/* Keep in lockstep with src/norns-hid.h + spec §4.1. */
+static const int k_hid_virtual_keys[] = {
+    BTN_SOUTH, BTN_EAST, BTN_WEST, BTN_NORTH, BTN_TL, BTN_TR, BTN_TL2, BTN_TR2,
+    BTN_SELECT, BTN_START, BTN_THUMBL, BTN_THUMBR,
+    BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT,
+};
+static const int k_hid_virtual_axes[] = { ABS_X, ABS_Y, ABS_RX, ABS_RY };
+
+int dev_hid_make_virtual(struct dev_hid *d) {
+    struct dev_common *base = (struct dev_common *)d;
+    struct libevdev *dev = libevdev_new();
+    if (dev == NULL) { return -1; }
+    libevdev_set_name(dev, "norns-panicos gamepad");
+    libevdev_set_id_bustype(dev, BUS_VIRTUAL);
+    libevdev_set_id_vendor(dev, 0x1209);
+    libevdev_set_id_product(dev, 0x6e70);
+    libevdev_enable_event_type(dev, EV_KEY);
+    for (unsigned i = 0; i < sizeof(k_hid_virtual_keys) / sizeof(k_hid_virtual_keys[0]); i++) {
+        libevdev_enable_event_code(dev, EV_KEY, k_hid_virtual_keys[i], NULL);
+    }
+    libevdev_enable_event_type(dev, EV_ABS);
+    struct input_absinfo ai;
+    memset(&ai, 0, sizeof(ai));
+    ai.minimum = -32768; ai.maximum = 32767;
+    for (unsigned i = 0; i < sizeof(k_hid_virtual_axes) / sizeof(k_hid_virtual_axes[0]); i++) {
+        libevdev_enable_event_code(dev, EV_ABS, k_hid_virtual_axes[i], &ai);
+    }
+    d->dev = dev;
+    add_types(d);
+    add_codes(d);
+    d->vid = libevdev_get_id_vendor(dev);
+    d->pid = libevdev_get_id_product(dev);
+    { guint16 raw_guid[16]; get_guid(dev, raw_guid); guid_to_string(raw_guid, d->guid); }
+    base->start  = &dev_hid_virtual_start;
+    base->deinit = &dev_hid_deinit;
+    return 0;
+}
+HIDEOF
+fi
+
+# (b) Dispatch to the virtual path at the very top of dev_hid_init.
+if ! grep -q "dev_hid_make_virtual((struct dev_hid" matron/src/device/device_hid.c; then
+    python3 -c "
+p='matron/src/device/device_hid.c'; s=open(p).read()
+a='int dev_hid_init(void *self) {'; i=s.find(a)
+if i>=0:
+    j=s.find(chr(10), i)+1
+    ins='    if (((struct dev_common *)self)->path == NULL) { return dev_hid_make_virtual((struct dev_hid *)self); }'+chr(10)
+    open(p,'w').write(s[:j]+ins+s[j:]); print('  dev_hid_init: NULL-path virtual dispatch added')
+else: print('  WARN: dev_hid_init not found')
+"
+fi
+
+# (c) Forward-declare dev_hid_make_virtual (defined at end of file, used in dev_hid_init).
+if ! grep -q "dev_hid_make_virtual" matron/src/device/device_hid.h; then
+    sed -i '/extern int dev_hid_init/i\extern int dev_hid_make_virtual(struct dev_hid *d);' matron/src/device/device_hid.h
+fi
+
+# (d) Register the virtual gamepad at startup, right after the virtual grid.
+if ! grep -q "norns-panicos gamepad" matron/src/main.c; then
+    sed -i '/dev_list_add(DEV_TYPE_MONOME, NULL, "virtual grid"/a\    dev_list_add(DEV_TYPE_HID, NULL, "norns-panicos gamepad", NULL);' matron/src/main.c
+fi
+
 # ── 9. Fix lo_message typedef conflict with lo/lo_types.h ──
 if grep -q 'typedef void \*lo_message' matron/src/event_types.h 2>/dev/null; then
     echo "  Fixing lo_message typedef conflict in event_types.h"
