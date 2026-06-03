@@ -34,6 +34,12 @@ jobs:
       - name: Show runner arch (sanity)
         run: uname -m && docker --version
 
+      # build-norns.sh's container runs as user `we` (uid 1000) and writes the
+      # prebuilt tarball into dist/ (mounted as /output). On the Linux runner
+      # dist/ is owned by a different uid, so make it group/other-writable.
+      - name: Prepare writable output dir
+        run: mkdir -p dist && chmod 0777 dist
+
       - name: Build PortMaster package (from source, native arm64)
         env:
           BUILD_FROM_SOURCE: '1'
