@@ -1,0 +1,143 @@
+--- Description ---
+Add a synthetic HID gamepad to matron, fed by a FIFO, so norns Lua scripts can
+read the full handheld pad through the STOCK hid API (hid.connect / device.event).
+This is the matron half of the "native gamepad" path (Phase 3). The host
+(norns-panicos.c) writes evdev frames to NORNS_HID_FIFO when a script is in
+native mode; matron presents them as a normal hid device.
+
+Status: GROUNDED against monome/norns matron source (device_hid.cc, device.cc,
+device_list.cc) but NOT yet built. Wire the apply-move-patches.sh snippet below
+into the from-source build and iterate against the compiler. The Lua-facing hid
+path (weaver + core/hid.lua) needs NO changes.
+
+Env var: NORNS_HID_FIFO  (path to FIFO, e.g. /tmp/norns-hid-1)
+
+Wire frame (host → matron), 5 bytes little-endian, matches src/norns-hid.h:
+  [type:1][code_lo:1][code_hi:1][value_lo:1][value_hi:1]
+  type = EV_KEY (1) | EV_ABS (3); value = 0/1 for buttons, -32768..32767 for axes
+
+--- Why it's small ---
+matron's dev_list_add(DEV_TYPE_HID, path, name, l) already calls
+dev_new(DEV_TYPE_HID, path, ...) and posts EVENT_HID_ADD. dev_new() is NULL-path
+safe (d->base.path = path ? strdup(path) : NULL). So we only need:
+  1. dev_hid_init(): if base.path == NULL, build an in-memory libevdev device and
+     use a FIFO-reader start thread instead of opening /dev/input/eventN.
+  2. main.c: register one virtual device at startup.
+add_types()/add_codes()/handle_event() in device_hid already do the capability
+extraction and EVENT_HID_EVENT posting — reuse them verbatim.
+
+--- apply-move-patches.sh section (insert after the "Register virtual grid" §8) ---
+
+# ── 8c. Register virtual HID gamepad (norns-panicos native pad) ──
+echo "  Patching device_hid.c + main.c (virtual HID gamepad)"
+
+# (a) Append the virtual init + FIFO-reader start to device_hid.c. Reuses the
+#     file's static add_types/add_codes/handle_event, so the stock hid_add/
+#     hid_event path and core/hid.lua are unchanged.
+if ! grep -q "dev_hid_make_virtual" matron/src/device/device_hid.c; then
+cat >> matron/src/device/device_hid.c << 'HIDEOF'
+
+/* ── norns-panicos: virtual gamepad (in-memory libevdev, fed by NORNS_HID_FIFO) ──
+ * Registered from main.c via dev_list_add(DEV_TYPE_HID, NULL, ...). A NULL path
+ * means "virtual": build the device in memory and stream evdev frames from the
+ * FIFO instead of reading /dev/input. */
+#include <unistd.h>
+
+static void *dev_hid_virtual_start(void *self) {
+    struct dev_hid *di = (struct dev_hid *)self;
+    const char *path = getenv("NORNS_HID_FIFO");
+    if (path == NULL) { return NULL; }
+    int fd = open(path, O_RDONLY);          /* blocks until the host opens write end */
+    if (fd < 0) { return NULL; }
+    uint8_t f[5];
+    for (;;) {
+        ssize_t got = 0;                    /* read exactly 5 bytes (robust to splits) */
+        while (got < 5) {
+            ssize_t r = read(fd, f + got, 5 - got);
+            if (r <= 0) { close(fd); return NULL; }
+            got += r;
+        }
+        struct input_event ie;
+        memset(&ie, 0, sizeof(ie));
+        ie.type  = (uint16_t)f[0];
+        ie.code  = (uint16_t)(f[1] | (f[2] << 8));
+        ie.value = (int16_t)(f[3] | (f[4] << 8));
+        handle_event(di, &ie);              /* posts EVENT_HID_EVENT */
+    }
+}
+
+/* Keep in lockstep with src/norns-hid.h / src/norns-controls + spec §4.1. */
+static const int k_hid_virtual_keys[] = {
+    BTN_SOUTH, BTN_EAST, BTN_WEST, BTN_NORTH, BTN_TL, BTN_TR, BTN_TL2, BTN_TR2,
+    BTN_SELECT, BTN_START, BTN_THUMBL, BTN_THUMBR,
+    BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT,
+};
+static const int k_hid_virtual_axes[] = { ABS_X, ABS_Y, ABS_RX, ABS_RY };
+
+int dev_hid_make_virtual(struct dev_hid *d) {
+    struct dev_common *base = (struct dev_common *)d;
+    struct libevdev *dev = libevdev_new();
+    if (dev == NULL) { return -1; }
+    libevdev_set_name(dev, "norns-panicos gamepad");
+    libevdev_set_id_bustype(dev, BUS_VIRTUAL);
+    libevdev_set_id_vendor(dev, 0x1209);
+    libevdev_set_id_product(dev, 0x6e70);
+    libevdev_enable_event_type(dev, EV_KEY);
+    for (unsigned i = 0; i < sizeof(k_hid_virtual_keys) / sizeof(k_hid_virtual_keys[0]); i++) {
+        libevdev_enable_event_code(dev, EV_KEY, k_hid_virtual_keys[i], NULL);
+    }
+    libevdev_enable_event_type(dev, EV_ABS);
+    struct input_absinfo ai;
+    memset(&ai, 0, sizeof(ai));
+    ai.minimum = -32768; ai.maximum = 32767;
+    for (unsigned i = 0; i < sizeof(k_hid_virtual_axes) / sizeof(k_hid_virtual_axes[0]); i++) {
+        libevdev_enable_event_code(dev, EV_ABS, k_hid_virtual_axes[i], &ai);
+    }
+    d->dev = dev;
+    add_types(d);                           /* static, defined above in this file */
+    add_codes(d);
+    d->vid = libevdev_get_id_vendor(dev);
+    d->pid = libevdev_get_id_product(dev);
+    { guint16 raw_guid[16]; get_guid(dev, raw_guid); guid_to_string(raw_guid, d->guid); }
+    base->start  = &dev_hid_virtual_start;
+    base->deinit = &dev_hid_deinit;         /* frees types/codes; same as real devices */
+    return 0;
+}
+HIDEOF
+fi
+
+# (b) Dispatch to the virtual path at the very top of dev_hid_init.
+if ! grep -q "dev_hid_make_virtual((struct dev_hid" matron/src/device/device_hid.c; then
+    python3 -c "
+p='matron/src/device/device_hid.c'; s=open(p).read()
+a='int dev_hid_init(void *self) {'; i=s.find(a)
+if i>=0:
+    j=s.find(chr(10), i)+1
+    ins='    if (((struct dev_common *)self)->path == NULL) { return dev_hid_make_virtual((struct dev_hid *)self); }'+chr(10)
+    open(p,'w').write(s[:j]+ins+s[j:]); print('  dev_hid_init: NULL-path virtual dispatch added')
+else: print('  WARN: dev_hid_init not found')
+"
+fi
+
+# (c) Forward-declare dev_hid_make_virtual (defined at end of file, used in dev_hid_init).
+if ! grep -q "dev_hid_make_virtual" matron/src/device/device_hid.h; then
+    sed -i '/extern int dev_hid_init/i\extern int dev_hid_make_virtual(struct dev_hid *d);' matron/src/device/device_hid.h
+fi
+
+# (d) Register the virtual gamepad at startup, right after the virtual grid.
+if ! grep -q "norns-panicos gamepad" matron/src/main.c; then
+    sed -i '/dev_list_add(DEV_TYPE_MONOME, NULL, "virtual grid"/a\    dev_list_add(DEV_TYPE_HID, NULL, "norns-panicos gamepad", NULL);' matron/src/main.c
+fi
+
+--- Verify after building (maiden REPL) ---
+  for i,d in ipairs(hid.vports) do print(i, d.name) end   -- expect "norns-panicos gamepad"
+  hid.vports[1].event = function(t,c,v) print("hid",t,c,v) end
+  -- then from a device shell:
+  printf '\x01\x30\x01\x01\x00' > /tmp/norns-hid-1   -- EV_KEY BTN_SOUTH down → "hid 1 304 1"
+
+--- Notes / risks to watch at build time ---
+- device file extensions: upstream uses .cc, but this repo's other patches target
+  device_*.c / main.c — follow whatever build-norns.sh actually clones.
+- libevdev never freed in dev_hid_deinit (matches existing real-device behavior).
+- BUS_VIRTUAL / BTN_* / ABS_* come from <linux/input.h> (already included).
+- The read thread is pthread_cancel-cancellable at read(); dev_delete handles it.
