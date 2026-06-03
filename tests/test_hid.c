@@ -11,6 +11,7 @@ static void test_button_mapping(void) {
     assert(type == EV_KEY && code == EVB_BTN_NORTH);   /* Y = NORTH */
     assert(pad_input_to_evdev(PAD_X, &type, &code) == 1);
     assert(type == EV_KEY && code == EVB_BTN_WEST);    /* X = WEST */
+    assert(pad_input_to_evdev(PAD_COUNT, &type, &code) == 0); /* sentinel: unmapped */
     printf("  PASS test_button_mapping\n");
 }
 

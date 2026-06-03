@@ -277,6 +277,11 @@ static void test_native_mode(void) {
 
     controls_parse_scheme(&c, cfg, "script:gamepong");
     assert(c.native_mode == 1);                       /* overlay turns it on */
+
+    /* Any non-"native" value parses back to emulation (0). */
+    const char *off = "[script:plain]\nmode = emulation\n";
+    controls_parse_scheme(&c, off, "script:plain");
+    assert(c.native_mode == 0);
     printf("  PASS test_native_mode\n");
 }
 
