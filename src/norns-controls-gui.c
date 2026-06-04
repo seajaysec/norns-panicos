@@ -550,14 +550,22 @@ static void render_editor(void) {
         SDL_Color lc = sel ? ACC : (inh ? DIM : WHITE);
         SDL_Color vc = sel ? ACC : (inh ? DIM : HINT);
         draw_text_v(A.font, 44, y, rh, lc, row->label);
-        draw_text_v(A.font, 244, y, rh, vc, val);
+        /* Value + ‹›-selector as one unit in a right-of-centre column. It used
+         * to be left-jammed (value@244, ‹@226) with the ›@530 stranded far away,
+         * so short values sat far left with a huge gap to the inherit badge and
+         * overlapped long labels. Centre the value at VAL_CX and bracket it
+         * tightly with the arrows. */
+        #define VAL_CX   400          /* value column centre                  */
+        #define SEL_HALF 100          /* ‹ / › sit this far either side of it  */
+        { int vw = 0, vh = 0; TTF_SizeUTF8(A.font, val, &vw, &vh); (void)vh;
+          draw_text_v(A.font, VAL_CX - vw / 2, y, rh, vc, val); }
         /* override badge / inherit tag */
         if (A.is_overlay)
             draw_text_v(A.font_sm, SCREEN_W - 96, y, rh, sel ? ACC : (inh ? DIM : OKC),
                         inh ? "↳ inherits" : "● override");
         if (sel && row->type == ROW_ROUTE) {
-            draw_text_v(A.font, 226, y, rh, ACC, "‹");
-            draw_text_v(A.font, SCREEN_W - 110, y, rh, ACC, "›");
+            draw_text_v(A.font, VAL_CX - SEL_HALF, y, rh, ACC, "‹");
+            draw_text_v(A.font, VAL_CX + SEL_HALF, y, rh, ACC, "›");
         }
     }
 
