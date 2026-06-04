@@ -16,8 +16,9 @@
  *   D-pad        = E1 (quick menu scroll, both axes)
  *   Left stick   = E2 (velocity-scaled, throttled)
  *   Right stick  = E3 (velocity-scaled, throttled)
- *   Select            = restart norns
- *   Select + Start    = exit to PortMaster
+ *   Menu/FN (tap)               = home (return to the norns menu)
+ *   Menu/FN (hold) / Select+Menu = quit to PortMaster
+ *   Select, Start, L3, R3       = free, mappable (default unbound)
  */
 
 #define _GNU_SOURCE
@@ -613,7 +614,10 @@ static int handle_system_button(norns_state_t *s, SDL_ControllerButtonEvent *ev,
     }
     if (ev->button == SDL_CONTROLLER_BUTTON_BACK && pressed && s->sysbtn.guide_held) {
         apply_sys_action(s, sysbtn_select_down(&s->sysbtn));
-        return 1;   /* Select consumed ONLY as the Select+Menu chord */
+        return 1;   /* Select consumed ONLY as the Select+Menu chord (down only).
+                     * The matching Select-up isn't consumed, but every chord path
+                     * sets running=0 (quit), so the app exits before that up is
+                     * processed — no spurious key-up reaches a bound Select. */
     }
     return 0;
 }
