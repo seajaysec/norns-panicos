@@ -160,8 +160,9 @@ chmod +x "$HOME/maiden/maiden" 2>/dev/null || true
 # norns scripts' install routines routinely pull schollz/supercollider-plugins —
 # 32-bit ARM .so that scsynth's dlopen() rejects with ELFCLASS32 on this aarch64
 # port, so engines load but make NO sound. The correct aarch64 builds ship
-# binary-only in /usr/share/.../Extensions/ingenue-ugens, and the matching .sc
-# classes live elsewhere, so removing the 32-bit user-dir copies is safe. Running
+# binary-only in ~/.local/share/SuperCollider/Extensions/ingenue-ugens (bundled
+# by build-panicos.sh; they're 64-bit so this strip keeps them), and the matching
+# .sc classes live elsewhere, so removing the 32-bit user-dir copies is safe. Running
 # this every launch makes it self-healing against re-installs. ELF class is byte
 # e_ident[4] (1=32-bit, 2=64-bit) — read directly so this does not depend on
 # `file` being present on minimal PortMaster OSes.
