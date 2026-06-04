@@ -20,8 +20,9 @@ Each encoder is driven by **two inputs** — a D-pad/shoulder/trigger button-pai
 | **A** | **K3** | Confirm / enter. |
 | **X** | **K2** | Back / cancel. |
 | **Y** | **K1** | Home / back-to-menu / "shift". |
-| **Select** (tap) | — | Restart norns. |
-| **Select + Start** | — | Quit to PortMaster. |
+| **Menu/FN** (tap) | — | Home — return to the norns system menu. |
+| **Menu/FN** (hold) or **Select + Menu/FN** | — | Quit to PortMaster. |
+| **Select**, **Start**, **L3/R3** | (mappable) | Freed — bind them in the config (default unbound). |
 
 All encoders **accelerate when held** — tap for one detent, hold to spin fast
 (button-pairs ramp a bit snappier than the sticks; both tunable below).
@@ -89,14 +90,17 @@ e3 = shoulders         #   L1 = −, R1 = +
   is active. A scheme section only needs to list its encoders.
 - **Encoder sources:** `dpad`, `dpad-x`, `dpad-y`, `lstick`, `lstick-y`,
   `rstick`, `rstick-y`, `shoulders`, `none`.
-- **Key buttons:** `a b x y l1 r1` (comma-separated, multiple allowed per key).
+- **Key buttons:** `a b x y l1 r1 select start l3 r3` (comma-separated, multiple
+  allowed per key). `l3`/`r3` are the stick clicks. `guide`/`menu` (Menu/FN) is
+  **host-reserved** and cannot be bound.
 - To add your own layout, drop in a new `[my-layout]` section and set
   `scheme = my-layout`.
 
 Unknown keys, values, or scheme names are ignored (and logged) rather than
 breaking input, so a typo can't lock you out — you fall back to globals +
-defaults. **Select = restart** and **Select + Start = quit** are fixed and
-cannot be unbound. The startup log prints the active scheme:
+defaults. **Menu/FN = home** (tap) and **Menu/FN-hold / Select + Menu/FN = quit**
+are host-reserved and cannot be rebound; everything else — including Select,
+Start, and the stick clicks — is yours to map. The startup log prints the active scheme:
 `controls: <path> (scheme: sticks)`.
 
 ### Context overlays — per-menu and per-script tweaks
@@ -156,8 +160,10 @@ has a home and there's no hold-to-select modality.
 
 - **"A stick does nothing."** Check `e2`/`e3` point at `lstick`/`rstick`, and
   that `stick_deadzone` isn't set absurdly high.
-- **"The screen froze / no sound."** Tap **Select** to restart norns.
-- **"How do I quit?"** **Select + Start**.
+- **"The screen froze / no sound."** Tap **Menu/FN** to return to the menu;
+  reload the script. (If norns itself is wedged, **hold Menu/FN** to quit and
+  relaunch.)
+- **"How do I quit?"** **Hold Menu/FN**, or **Select + Menu/FN**.
 - **Confirm what loaded:** the log (`<port>/norns/logs/norns.log`) prints
   `controls: loaded <path>` or `controls: no file at <path>` at startup.
 
