@@ -261,6 +261,33 @@ static void test_context_overlay(void) {
     printf("  PASS test_context_overlay\n");
 }
 
+static void test_sysbtn(void) {
+    const uint32_t HOLD = 800;
+    sysbtn_t s = {0};
+    /* quick tap → HOME */
+    assert(sysbtn_guide(&s, 1, /*select_held*/0, /*now*/1000, HOLD) == SYS_NONE);
+    assert(sysbtn_guide(&s, 0, 0, 1200, HOLD) == SYS_HOME);     /* up after 200ms */
+    /* hold past threshold → QUIT, release after is inert */
+    s = (sysbtn_t){0};
+    assert(sysbtn_guide(&s, 1, 0, 0, HOLD) == SYS_NONE);
+    assert(sysbtn_tick(&s, 500, HOLD) == SYS_NONE);             /* not yet */
+    assert(sysbtn_tick(&s, 900, HOLD) == SYS_QUIT);             /* held 900ms */
+    assert(sysbtn_tick(&s, 1000, HOLD) == SYS_NONE);            /* already consumed */
+    assert(sysbtn_guide(&s, 0, 0, 1100, HOLD) == SYS_NONE);     /* no phantom HOME */
+    /* Select pressed while GUIDE held → QUIT chord */
+    s = (sysbtn_t){0};
+    sysbtn_guide(&s, 1, 0, 0, HOLD);
+    assert(sysbtn_select_down(&s) == SYS_QUIT);
+    assert(sysbtn_guide(&s, 0, 0, 100, HOLD) == SYS_NONE);
+    /* GUIDE pressed while Select already held → immediate QUIT */
+    s = (sysbtn_t){0};
+    assert(sysbtn_guide(&s, 1, /*select_held*/1, 0, HOLD) == SYS_QUIT);
+    /* Select down with no GUIDE → NONE (Select stays a free button) */
+    s = (sysbtn_t){0};
+    assert(sysbtn_select_down(&s) == SYS_NONE);
+    printf("  PASS test_sysbtn\n");
+}
+
 static void test_new_bindable_buttons(void) {
     controls_t c;
     controls_defaults(&c);
@@ -324,6 +351,7 @@ int main(void) {
     test_context_overlay();
     test_native_mode();
     test_new_bindable_buttons();
+    test_sysbtn();
     printf("All tests passed.\n");
     return 0;
 }

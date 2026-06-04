@@ -118,6 +118,47 @@ typedef struct {
     char scheme[32];       /* active scheme name ("" if none requested)       */
 } controls_load_info_t;
 
+/* ── Host-reserved system button (Menu/FN = GUIDE) ───────────────────────────
+ * Pure, SDL-free so the host AND tests share it. The host feeds events
+ * (GUIDE down/up, Select-down while GUIDE held, per-frame tick) plus SDL_GetTicks()
+ * as `now_ms`; this returns the system action to perform. */
+typedef enum { SYS_NONE = 0, SYS_HOME, SYS_QUIT } sys_action_t;
+
+typedef struct {
+    int      guide_held;
+    uint32_t guide_down_ms;
+    int      consumed;       /* a QUIT already fired this hold → suppress HOME */
+} sysbtn_t;
+
+/* GUIDE pressed (down!=0) or released. select_held = is Select down right now. */
+static inline sys_action_t sysbtn_guide(sysbtn_t *s, int down, int select_held,
+                                        uint32_t now_ms, uint32_t hold_ms) {
+    (void)hold_ms;   /* unused here; kept for a uniform timing-context signature */
+    if (down) {
+        s->guide_held = 1; s->guide_down_ms = now_ms; s->consumed = 0;
+        if (select_held) { s->consumed = 1; return SYS_QUIT; }   /* Select+Menu chord */
+        return SYS_NONE;
+    }
+    sys_action_t a = s->consumed ? SYS_NONE : SYS_HOME;          /* tap → home */
+    s->guide_held = 0;
+    return a;
+}
+
+/* Select pressed: a QUIT only if GUIDE is currently held (chord). Otherwise
+ * NONE — Select is a normal freed button. */
+static inline sys_action_t sysbtn_select_down(sysbtn_t *s) {
+    if (s->guide_held && !s->consumed) { s->consumed = 1; return SYS_QUIT; }
+    return SYS_NONE;
+}
+
+/* Per-frame: fire QUIT once GUIDE has been held past hold_ms. */
+static inline sys_action_t sysbtn_tick(sysbtn_t *s, uint32_t now_ms, uint32_t hold_ms) {
+    if (s->guide_held && !s->consumed && (now_ms - s->guide_down_ms) >= hold_ms) {
+        s->consumed = 1; return SYS_QUIT;
+    }
+    return SYS_NONE;
+}
+
 /* ── Defaults: the `sticks` scheme ───────────────────────────────────────────
  * D-pad left/right → E1; D-pad up/down + left stick → E2; right stick → E3. */
 static inline void controls_defaults(controls_t *c) {
