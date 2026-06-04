@@ -114,7 +114,9 @@ e1 = lstick-xy
 e2 = rstick
 e3 = rstick-y-inv
 
-# Note: Select = restart norns, Select+Start = quit. These are fixed.
+# Note: Menu/FN = home (tap); Menu/FN-hold or Select+Menu/FN = quit. These are
+# host-reserved and can't be rebound. Select, Start, and the stick clicks
+# (l3/r3) are free to map.
 CTRLCONF
 fi
 
@@ -154,6 +156,10 @@ chmod +x ./bin/norns-panicos ./bin/norns-input-bridge ./bin/norns-push2-display 
          ./bin/norns-monome-bridge 2>/dev/null
 find "$HOME/norns/build" -type f -exec chmod +x {} \; 2>/dev/null || true
 chmod +x "$HOME/maiden/maiden" 2>/dev/null || true
+# Bundled aarch64 SC UGen .so (ingenue-ugens) — FAT32 drops exec bits; scsynth
+# dlopen()s these at boot, so restore +x or the engines stay silent.
+find "$HOME/.local/share/SuperCollider/Extensions" -name '*.so' \
+     -exec chmod +x {} \; 2>/dev/null || true
 
 # --- PanicOS audio setup ---------------------------------------------------
 # PanicOS runs PipeWire as its JACK server but ships NO JACK CLI tools. norns
@@ -274,7 +280,19 @@ export PIPEWIRE_QUANTUM=128/48000
     [ -n "$SC" ] && chrt -a -f -p 76 "$SC" 2>/dev/null
 ) &
 
+# ingenue — modern web editor on :7777, alongside maiden (:5000). Lives in
+# dust/code/ingenue; runs for the norns session (started here, stopped on exit).
+INGENUE_DIR="$HOME/dust/code/ingenue"
+if command -v python3 >/dev/null 2>&1 && [ -f "$INGENUE_DIR/server.py" ]; then
+    pkill -f 'server.py 7777' 2>/dev/null || true
+    ( cd "$INGENUE_DIR" && setsid python3 server.py 7777 >"$GAMEDIR/logs/ingenue.log" 2>&1 & )
+    echo "ingenue: web editor starting on :7777" >> "$GAMEDIR/logs/norns.log"
+fi
+
 $GPTOKEYB "norns-panicos" &
 pm_platform_helper "./bin/norns-panicos"
 ./bin/norns-panicos 2>&1 | tee -a "$GAMEDIR/logs/norns.log"
+
+# Stop ingenue when norns exits (kill by cmdline — the process has no path).
+pkill -f 'server.py 7777' 2>/dev/null || true
 pm_finish

@@ -27,7 +27,8 @@ Defaults on dual-stick devices (RG35XX Pro / H, etc.):
 
 - **E1** = D-pad L/R + L1/R1 · **E2** = D-pad U/D + left stick · **E3** = L2/R2 + right stick
 - **K1** = Y · **K2** = X (+ B in the menu) · **K3** = A
-- **Select** = restart norns · **Select + Start** = quit to PortMaster
+- **Menu/FN** = home (tap) · **Menu/FN (hold)** or **Select + Menu/FN** = quit to PortMaster
+- **Select**, **Start**, and the stick clicks (**L3/R3**) are freed — map them in `controls.conf`
 
 For the Push 2 / Ableton Move control surface, see
 [docs/push2-interface.md](docs/push2-interface.md).
@@ -43,6 +44,15 @@ from the PortMaster **Tools** menu (`Grid-On.sh` / `Grid-Off.sh`).
 > The grid can take up to ~a minute after boot to light up — this matches stock
 > norns behaviour (it waits on `serialosc`/device enumeration), not a port bug.
 
+## Editing on device — ingenue
+
+PanicOS bundles [**ingenue**](https://github.com/seajaysec/ingenue), a modern,
+responsive web editor for norns, as a first-class experience. It starts
+automatically on **`http://<device-ip>:7777/`**, running alongside maiden
+(`:5000`) — open it from any phone, tablet, or laptop on the same network to
+browse, edit, install, and manage scripts with a touch-friendly UI. No setup:
+it's installed into `dust/code/ingenue` and launched by the port.
+
 ## Audio
 
 The launcher pins the codec to **48 kHz** to match norns' engine rate
@@ -50,10 +60,19 @@ The launcher pins the codec to **48 kHz** to match norns' engine rate
 config into startup. The from-source build also guarantees the crone
 ADC-optional patch so capture-less boards still get output.
 
+PanicOS also ships **aarch64-compiled SuperCollider UGen plugins** (PortedPlugins,
+mi-UGens, f0plugins, and more, from
+[seajaysec/sc-plugins-arm64](https://github.com/seajaysec/sc-plugins-arm64)). On a
+64-bit port these are otherwise missing — only the `.sc` classes ride along with
+scripts, so `scsynth` loads the engine class but silently rejects the absent/
+wrong-arch binaries and the script plays **no sound**. Bundling the `.so` (into a
+binary-only `Extensions/ingenue-ugens/` dir) makes those engines audible out of
+the box; ingenue can also re-heal them at runtime if an OS update wipes them.
+
 ## Layout
 
 - `src/` — the SDL2 host, Push 2 display driver, and input bridge
 - `patches/` — matron/crone source patches for the headless handheld build
-- `scripts/` — Docker-based build of norns + SuperCollider plugins
+- `scripts/` — Docker-based build of norns; bundles ingenue + aarch64 SC UGens
 - `ports/portmaster/` — PortMaster port metadata and launch script
 - `docs/` — navigation, interface, and design docs

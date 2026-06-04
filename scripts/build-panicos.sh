@@ -18,7 +18,7 @@ NORNS_BIN="$DIST/norns/bin"
 # prebuilt must already carry that patch or the guard below aborts the build.
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-1}"
 PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/norns-move-prebuilt.tar.gz"
-SC_PLUGINS_URL=""  # SC plugins are provided by the OS — not bundled
+INGENUE_REPO="${INGENUE_REPO:-https://github.com/seajaysec/ingenue}"  # web editor (:7777) + aarch64 SC UGens
 
 trap 'echo ""; echo "ERROR: Build failed — cleaning up..."; rm -rf "$DIST"; exit 1' ERR
 
@@ -90,9 +90,21 @@ else
     echo "[2/4] norns prebuilt OK"
 fi
 
-# ── 3. SC plugins — provided by the OS, not bundled ─────────
+# ── 3. Fetch ingenue (web editor + bundled aarch64 SC UGens) ─
 echo ""
-echo "--- [3/4] SC plugins: using system-installed (skipping bundle) ---"
+echo "--- [3/4] Fetching ingenue (editor :7777 + aarch64 SC UGen binaries) ---"
+# ingenue evolves in its own repo; track main (single source of truth — files
+# are baked into the package below, so the output stays self-contained). Its
+# web/vendor tarball supplies the aarch64 SC UGen .so the OS does NOT ship: on a
+# 64-bit port scsynth silently rejects wrong-arch .so, so engine classes load
+# but their UGens are "not installed" -> SynthDefs fail -> the script is SILENT.
+INGENUE_SRC="$REPO_ROOT/dist/ingenue-src"
+rm -rf "$INGENUE_SRC"
+git clone --depth 1 "$INGENUE_REPO" "$INGENUE_SRC"
+INGENUE_WEB="$INGENUE_SRC/web"
+SC_UGEN_TARBALL="$(ls "$INGENUE_WEB"/vendor/sc-plugins-arm64-*.tar.gz 2>/dev/null | head -1)"
+[ -n "$SC_UGEN_TARBALL" ] || { echo "ERROR: ingenue SC UGen tarball missing in $INGENUE_WEB/vendor" >&2; exit 1; }
+echo "[3/4] ingenue OK ($(basename "$SC_UGEN_TARBALL"))"
 
 # ── 4. Assemble package ──────────────────────────────────────
 echo ""
@@ -178,6 +190,31 @@ for REPO in \
     [ -d "$NAME" ] || git clone --depth 1 "$REPO"
 done
 cd "$REPO_ROOT"
+
+# ingenue — modern web editor, bundled to run on :7777 alongside maiden.
+echo "  Installing ingenue (web editor) into dust/code/ingenue..."
+INGENUE_DEST="$NORNS_DATA/dust/code/ingenue"
+mkdir -p "$INGENUE_DEST/lib" "$INGENUE_DEST/vendor"
+cp "$INGENUE_WEB/index.html" "$INGENUE_WEB/community.json" "$INGENUE_WEB/enriched.json" \
+   "$INGENUE_WEB/server.py" "$INGENUE_DEST/"
+cp "$INGENUE_WEB/lib/mod.lua" "$INGENUE_DEST/lib/" 2>/dev/null || true
+cp "$SC_UGEN_TARBALL" "$INGENUE_DEST/vendor/"   # source for ingenue's runtime re-heal
+
+# aarch64 SC UGen binaries — fix the silent-engine half-state. scsynth scans the
+# Extensions tree recursively for .so; install them BINARY-ONLY into ingenue-ugens/
+# (no .sc beside them -> no duplicate-class breakage, and Norns.sh excludes this
+# tree from sclang's class paths). Mirrors ingenue's verified on-device heal.
+echo "  Installing aarch64 SC UGen .so (ingenue-ugens)..."
+SC_EXT="$NORNS_DATA/.local/share/SuperCollider/Extensions/ingenue-ugens"
+mkdir -p "$SC_EXT"
+_sc_tmp="$REPO_ROOT/dist/sc-ugens-tmp"
+rm -rf "$_sc_tmp"; mkdir -p "$_sc_tmp"
+tar xzf "$SC_UGEN_TARBALL" -C "$_sc_tmp"
+find "$_sc_tmp" -name '*.so' -exec cp -f {} "$SC_EXT/" \;
+_so_n="$(find "$SC_EXT" -name '*.so' | wc -l | tr -d ' ')"
+rm -rf "$_sc_tmp" "$INGENUE_SRC"
+[ "${_so_n:-0}" -gt 0 ] || { echo "ERROR: no aarch64 SC UGen .so installed" >&2; exit 1; }
+echo "  Installed $_so_n aarch64 SC UGen .so into .local/share/SuperCollider/Extensions/ingenue-ugens"
 
 # Maiden catalog sources
 cat > "$NORNS_DATA/dust/data/sources/community.json" << 'SRCEOF'
