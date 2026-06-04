@@ -64,15 +64,19 @@ typedef enum {
     ENC_SRC_RSTICK_Y_INV,/* right stick Y, inverted (down = increment)        */
 } enc_source_t;
 
-/* Buttons bindable to keys (bitmask). L2/R2 are analog triggers, not buttons,
- * so they are intentionally absent. */
+/* Buttons bindable to keys (bitmask, uint16_t). L2/R2 are analog triggers, not
+ * buttons. GUIDE (Menu/FN) is host-reserved and intentionally NOT bindable. */
 enum {
-    BTN_A  = 1 << 0,
-    BTN_B  = 1 << 1,
-    BTN_X  = 1 << 2,
-    BTN_Y  = 1 << 3,
-    BTN_L1 = 1 << 4,
-    BTN_R1 = 1 << 5,
+    BTN_A      = 1 << 0,
+    BTN_B      = 1 << 1,
+    BTN_X      = 1 << 2,
+    BTN_Y      = 1 << 3,
+    BTN_L1     = 1 << 4,
+    BTN_R1     = 1 << 5,
+    BTN_SELECT = 1 << 6,
+    BTN_START  = 1 << 7,
+    BTN_L3     = 1 << 8,   /* left stick click  */
+    BTN_R3     = 1 << 9,   /* right stick click */
 };
 
 typedef struct {
@@ -83,7 +87,7 @@ typedef struct {
     int8_t       dpad_enc[2]; /* [0]=left/right, [1]=up/down */
     int8_t       shoulder_enc;/* L1 = −, R1 = +              */
     int8_t       trigger_enc; /* L2 = −, R2 = +              */
-    uint8_t      key_btn[3];  /* button bitmask mapped to K1, K2, K3           */
+    uint16_t     key_btn[3];  /* button bitmask mapped to K1, K2, K3           */
     int          dpad_step;   /* encoder delta per emitted detent              */
     int          stick_deadzone;
     int          stick_throttle;
@@ -277,19 +281,24 @@ static inline enc_source_t controls__parse_enc(const char *tok) {
 }
 
 /* Single button token → bit, or 0 if unknown. */
-static inline uint8_t controls__parse_btn(const char *tok) {
-    if (!strcmp(tok, "a"))  return BTN_A;
-    if (!strcmp(tok, "b"))  return BTN_B;
-    if (!strcmp(tok, "x"))  return BTN_X;
-    if (!strcmp(tok, "y"))  return BTN_Y;
-    if (!strcmp(tok, "l1")) return BTN_L1;
-    if (!strcmp(tok, "r1")) return BTN_R1;
+static inline uint16_t controls__parse_btn(const char *tok) {
+    if (!strcmp(tok, "a"))      return BTN_A;
+    if (!strcmp(tok, "b"))      return BTN_B;
+    if (!strcmp(tok, "x"))      return BTN_X;
+    if (!strcmp(tok, "y"))      return BTN_Y;
+    if (!strcmp(tok, "l1"))     return BTN_L1;
+    if (!strcmp(tok, "r1"))     return BTN_R1;
+    if (!strcmp(tok, "select")) return BTN_SELECT;
+    if (!strcmp(tok, "start"))  return BTN_START;
+    if (!strcmp(tok, "l3"))     return BTN_L3;
+    if (!strcmp(tok, "r3"))     return BTN_R3;
+    /* "guide"/"menu" deliberately unmapped — host-reserved (Phase 1). */
     return 0;
 }
 
 /* Parse a comma-separated button list ("y, b") into a bitmask. */
-static inline uint8_t controls__parse_btn_list(char *val) {
-    uint8_t mask = 0;
+static inline uint16_t controls__parse_btn_list(char *val) {
+    uint16_t mask = 0;
     for (char *save = NULL, *t = strtok_r(val, ",", &save); t;
               t = strtok_r(NULL, ",", &save)) {
         mask |= controls__parse_btn(controls__trim(t));

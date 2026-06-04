@@ -261,6 +261,26 @@ static void test_context_overlay(void) {
     printf("  PASS test_context_overlay\n");
 }
 
+static void test_new_bindable_buttons(void) {
+    controls_t c;
+    controls_defaults(&c);
+    /* defaults leave the freed buttons unbound */
+    for (int k = 0; k < 3; k++) {
+        assert(!(c.key_btn[k] & (BTN_SELECT | BTN_START | BTN_L3 | BTN_R3)));
+    }
+    /* they can be bound, including multiple per key */
+    assert(controls_parse(&c, "k1 = select, start\nk2 = l3\nk3 = r3\n") == 3);
+    assert(c.key_btn[0] == (uint16_t)(BTN_SELECT | BTN_START));
+    assert(c.key_btn[1] == BTN_L3);
+    assert(c.key_btn[2] == BTN_R3);
+    /* "guide"/"menu" are host-reserved and never bind */
+    controls_defaults(&c);
+    assert(controls_parse(&c, "k1 = guide\nk2 = menu, a\n") == 2);
+    assert(c.key_btn[0] == 0);            /* guide ignored → empty */
+    assert(c.key_btn[1] == BTN_A);        /* menu ignored, a kept */
+    printf("  PASS test_new_bindable_buttons\n");
+}
+
 static void test_native_mode(void) {
     controls_t c;
     controls_defaults(&c);
@@ -303,6 +323,7 @@ int main(void) {
     test_unknown_scheme_keeps_globals();
     test_context_overlay();
     test_native_mode();
+    test_new_bindable_buttons();
     printf("All tests passed.\n");
     return 0;
 }
