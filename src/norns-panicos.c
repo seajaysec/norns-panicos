@@ -443,9 +443,9 @@ static void render_frame(norns_state_t *s) {
 
 /* ── Gamepad input ──────────────────────────────────────── */
 
-/* Map an SDL face/shoulder button to our config bit, or 0 if it isn't a
- * key-bindable button (D-pad and system buttons are handled separately). */
-static uint8_t sdl_btn_bit(Uint8 button) {
+/* Map an SDL button to our key-binding bit, or 0 if it isn't key-bindable.
+ * (D-pad = encoders; L2/R2 = analog triggers; GUIDE = host-reserved.) */
+static uint16_t sdl_btn_bit(Uint8 button) {
     switch (button) {
     case SDL_CONTROLLER_BUTTON_A:             return BTN_A;
     case SDL_CONTROLLER_BUTTON_B:             return BTN_B;
@@ -453,6 +453,10 @@ static uint8_t sdl_btn_bit(Uint8 button) {
     case SDL_CONTROLLER_BUTTON_Y:             return BTN_Y;
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return BTN_L1;
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return BTN_R1;
+    case SDL_CONTROLLER_BUTTON_BACK:          return BTN_SELECT;
+    case SDL_CONTROLLER_BUTTON_START:         return BTN_START;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK:     return BTN_L3;
+    case SDL_CONTROLLER_BUTTON_RIGHTSTICK:    return BTN_R3;
     default:                                  return 0;
     }
 }
@@ -617,7 +621,7 @@ static int handle_system_button(norns_state_t *s, SDL_ControllerButtonEvent *ev,
 static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     if (!s->gc) return;
     int pressed = (ev->type == SDL_CONTROLLERBUTTONDOWN);
-    uint8_t bit = sdl_btn_bit(ev->button);
+    uint16_t bit = sdl_btn_bit(ev->button);
 
     /* Reserved system button (Menu/FN) — handled before everything else and
      * never reaches the script or the key map. */
