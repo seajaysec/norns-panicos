@@ -41,6 +41,9 @@
 
 /* ── Constants ──────────────────────────────────────────── */
 
+#define GUIDE_HOLD_MS 800     /* hold Menu/FN this long to quit */
+#define SYS_BUTTON    SDL_CONTROLLER_BUTTON_GUIDE   /* C1: swap to _START if GUIDE is swallowed */
+
 #define NORNS_WIDTH      128
 #define NORNS_HEIGHT     64
 #define SCREEN_FRAME_SZ  (NORNS_WIDTH * NORNS_HEIGHT / 2)  /* 4096 bytes */
@@ -86,8 +89,7 @@ typedef struct {
     uint8_t     dpad_btn;     /* held D-pad direction bitmask               */
     uint8_t     shoulder_btn; /* held L1/R1 bitmask (bit0=L1, bit1=R1)      */
     enc_drive_t enc_drive[3]; /* per-encoder accel state                    */
-    int     select_held;
-    int     select_was_combo;
+    sysbtn_t sysbtn;          /* Menu/FN reserved system-button state */
     int     native_grab_was;  /* last /tmp/norns-native state (runtime pad.grab) */
 
     pid_t pid_jackd;
@@ -590,22 +592,39 @@ static int dpad_y_flip(const norns_state_t *s) {
     return s->controls.dpad_y_invert ? -1 : 1;
 }
 
+static void apply_sys_action(norns_state_t *s, sys_action_t a) {
+    if (a == SYS_QUIT) {
+        s->running = 0;
+    } else if (a == SYS_HOME) {
+        send_key(s, 0, 1); send_key(s, 0, 0);   /* inject a K1 tap → norns home (C2) */
+    }
+}
+
+/* Returns 1 if the event was consumed as a reserved system action. */
+static int handle_system_button(norns_state_t *s, SDL_ControllerButtonEvent *ev, int pressed) {
+    if (ev->button == SYS_BUTTON) {
+        int sel = SDL_GameControllerGetButton(s->gc, SDL_CONTROLLER_BUTTON_BACK);
+        apply_sys_action(s, sysbtn_guide(&s->sysbtn, pressed, sel, SDL_GetTicks(), GUIDE_HOLD_MS));
+        return 1;   /* GUIDE is always host-reserved */
+    }
+    if (ev->button == SDL_CONTROLLER_BUTTON_BACK && pressed && s->sysbtn.guide_held) {
+        apply_sys_action(s, sysbtn_select_down(&s->sysbtn));
+        return 1;   /* Select consumed ONLY as the Select+Menu chord */
+    }
+    return 0;
+}
+
 static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     if (!s->gc) return;
     int pressed = (ev->type == SDL_CONTROLLERBUTTONDOWN);
     uint8_t bit = sdl_btn_bit(ev->button);
 
-    /* Native mode: the running script owns the raw pad. Route every pad button
-     * to the HID FIFO and suppress all K/E emulation.
-     *
-     * INTERIM (until Phase 1 frees a Menu/FN escape + Task 7): Select and Start
-     * are deliberately NOT routed — they fall through to the system-chord
-     * handler below so Select=restart / Select+Start=quit can still escape a
-     * native script. Once the reserved Menu/FN escape exists, Select/Start can
-     * join the native stream. */
-    if (s->controls.native_mode &&
-        ev->button != SDL_CONTROLLER_BUTTON_BACK &&
-        ev->button != SDL_CONTROLLER_BUTTON_START) {
+    /* Reserved system button (Menu/FN) — handled before everything else and
+     * never reaches the script or the key map. */
+    if (handle_system_button(s, ev, pressed)) return;
+
+    /* Native mode: the running script owns the raw pad (incl. Select/Start now). */
+    if (s->controls.native_mode) {
         int pad = sdl_btn_to_pad(ev->button);
         if (pad >= 0) send_pad_button(s, pad, pressed);
         return;
@@ -635,27 +654,6 @@ static void handle_button(norns_state_t *s, SDL_ControllerButtonEvent *ev) {
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  if (pressed) { s->dpad_btn |= DPADBIT_LEFT;  enc_tap(s, s->controls.dpad_enc[0], -1); } else s->dpad_btn &= ~DPADBIT_LEFT;  break;
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: if (pressed) { s->dpad_btn |= DPADBIT_RIGHT; enc_tap(s, s->controls.dpad_enc[0],  1); } else s->dpad_btn &= ~DPADBIT_RIGHT; break;
 
-    /* Select = restart; Select+Start = exit (hardcoded so they can't be unbound) */
-    case SDL_CONTROLLER_BUTTON_BACK:
-        if (pressed) {
-            s->select_held = 1;
-            s->select_was_combo = 0;
-            if (SDL_GameControllerGetButton(s->gc, SDL_CONTROLLER_BUTTON_START)) {
-                s->running = 0;
-                s->select_was_combo = 1;
-            }
-        } else {
-            if (!s->select_was_combo) restart_norns(s);
-            s->select_held = 0;
-        }
-        break;
-    case SDL_CONTROLLER_BUTTON_START:
-        if (pressed && s->select_held) {
-            s->running = 0;
-            s->select_was_combo = 1;
-        }
-        break;
-
     default: break;
     }
 }
@@ -679,6 +677,7 @@ static void poll_encoders(norns_state_t *s) {
     const controls_t *c = &s->controls;
     poll_context(s);
     poll_native_override(s);        /* may flip native_mode (pad.grab) — before guard */
+    apply_sys_action(s, sysbtn_tick(&s->sysbtn, SDL_GetTicks(), GUIDE_HOLD_MS));
     if (c->native_mode) return;     /* native mode: no encoder/key emulation */
 
     /* Resolve every button-pair to a per-encoder held direction. pair_event[e]=1
