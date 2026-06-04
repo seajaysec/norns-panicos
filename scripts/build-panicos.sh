@@ -35,7 +35,6 @@ check_dependencies() {
         "src/norns-push2-display.c" \
         "$SCRIPT_DIR/Dockerfile.panicos" \
         "$SCRIPT_DIR/build-norns.sh" \
-        "$SCRIPT_DIR/build-sc-plugins.sh" \
         "$REPO_ROOT/ports/portmaster/Norns.sh" \
         "$REPO_ROOT/ports/portmaster/control.txt"; do
         if [ ! -f "$f" ]; then
@@ -98,6 +97,14 @@ echo "--- [3/4] Fetching ingenue (editor :7777 + aarch64 SC UGen binaries) ---"
 # web/vendor tarball supplies the aarch64 SC UGen .so the OS does NOT ship: on a
 # 64-bit port scsynth silently rejects wrong-arch .so, so engine classes load
 # but their UGens are "not installed" -> SynthDefs fail -> the script is SILENT.
+#
+# We bundle the PREBUILT tarball, not a from-source compile: the .so are built
+# against SC 3.13.0 and this port runs SC 3.13.0, so the plugin api_version
+# matches (verified on-device). The from-source generator/fallback lives in
+# seajaysec/sc-plugins-arm64 (build.sh — the single source of truth); regenerate
+# the tarball there if a future port ships a different SuperCollider version.
+# A from-source build is intentionally NOT wired in here: PortMaster targets have
+# no apt/build toolchain and ~2 GB RAM, so on-device compilation is a non-starter.
 INGENUE_SRC="$REPO_ROOT/dist/ingenue-src"
 rm -rf "$INGENUE_SRC"
 git clone --depth 1 "$INGENUE_REPO" "$INGENUE_SRC"

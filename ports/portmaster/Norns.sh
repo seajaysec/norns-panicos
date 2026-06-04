@@ -156,6 +156,27 @@ chmod +x ./bin/norns-panicos ./bin/norns-input-bridge ./bin/norns-push2-display 
          ./bin/norns-monome-bridge 2>/dev/null
 find "$HOME/norns/build" -type f -exec chmod +x {} \; 2>/dev/null || true
 chmod +x "$HOME/maiden/maiden" 2>/dev/null || true
+# Strip wrong-arch (32-bit) community SC plugins from the user Extensions dir.
+# norns scripts' install routines routinely pull schollz/supercollider-plugins —
+# 32-bit ARM .so that scsynth's dlopen() rejects with ELFCLASS32 on this aarch64
+# port, so engines load but make NO sound. The correct aarch64 builds ship
+# binary-only in /usr/share/.../Extensions/ingenue-ugens, and the matching .sc
+# classes live elsewhere, so removing the 32-bit user-dir copies is safe. Running
+# this every launch makes it self-healing against re-installs. ELF class is byte
+# e_ident[4] (1=32-bit, 2=64-bit) — read directly so this does not depend on
+# `file` being present on minimal PortMaster OSes.
+_scext="$HOME/.local/share/SuperCollider/Extensions"
+if [ -d "$_scext" ]; then
+    _stripped=0
+    for _so in $(find "$_scext" -name '*.so' 2>/dev/null); do
+        _cls=$(dd if="$_so" bs=1 skip=4 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+        [ "$_cls" = "1" ] && rm -f "$_so" && _stripped=$((_stripped + 1))
+    done
+    [ "$_stripped" -gt 0 ] && echo "norns-panicos: stripped $_stripped wrong-arch (32-bit) SC plugin(s)" >> "$GAMEDIR/logs/norns.log"
+    unset _so _cls _stripped
+fi
+unset _scext
+
 # Bundled aarch64 SC UGen .so (ingenue-ugens) — FAT32 drops exec bits; scsynth
 # dlopen()s these at boot, so restore +x or the engines stay silent.
 find "$HOME/.local/share/SuperCollider/Extensions" -name '*.so' \
