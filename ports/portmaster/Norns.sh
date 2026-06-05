@@ -155,6 +155,26 @@ chmod +x ./bin/norns-panicos ./bin/norns-input-bridge ./bin/norns-push2-display 
 find "$HOME/norns/build" -type f -exec chmod +x {} \; 2>/dev/null || true
 chmod +x "$HOME/maiden/maiden" 2>/dev/null || true
 
+# ── sc64 audio fix 1/3: strip wrong-arch (32-bit) community SC plugins ──────
+# norns scripts' install routines routinely pull schollz/supercollider-plugins —
+# 32-bit ARM .so that scsynth's dlopen() rejects with ELFCLASS32 on this aarch64
+# port, so engines load but make NO sound. Correct aarch64 builds ship binary-only
+# (e.g. .../Extensions/ingenue-ugens), so removing the 32-bit user-dir copies is
+# safe. Running this every launch makes it self-healing against re-installs. ELF
+# class is byte e_ident[4] (1=32-bit, 2=64-bit) — read directly so this does not
+# depend on `file` being present.
+_scext="$HOME/.local/share/SuperCollider/Extensions"
+if [ -d "$_scext" ]; then
+    _stripped=0
+    for _so in $(find "$_scext" -name '*.so' 2>/dev/null); do
+        _cls=$(dd if="$_so" bs=1 skip=4 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+        [ "$_cls" = "1" ] && rm -f "$_so" && _stripped=$((_stripped + 1))
+    done
+    [ "$_stripped" -gt 0 ] && echo "norns-panicos: stripped $_stripped wrong-arch (32-bit) SC plugin(s)" >> "$GAMEDIR/logs/norns.log"
+    unset _so _cls _stripped
+fi
+unset _scext
+
 # --- PanicOS audio setup ---------------------------------------------------
 # PanicOS runs PipeWire as its JACK server but ships NO JACK CLI tools. norns
 # wires its audio graph (engine <-> crone) by shelling out to `jack_connect`
@@ -273,6 +293,54 @@ export PIPEWIRE_QUANTUM=128/48000
     [ -n "$CR" ] && chrt -a -f -p 76 "$CR" 2>/dev/null
     [ -n "$SC" ] && chrt -a -f -p 76 "$SC" 2>/dev/null
 ) &
+
+# ── sc64 audio fix 2/3: free sclang's langPort (57120) before launch ───────
+# sclang binds 57120 by default but SILENTLY increments to 57121+ when the port
+# is already held — typically by a sclang/scsynth/crone orphaned by a previous
+# hard power-off (routine on a handheld with no clean shutdown). Every nb mod and
+# matron OSC call hardcodes 57120, so a drifted sclang mutes them all with no
+# error. norns-panicos is not running yet (we launch it below), so any holder is a
+# stale orphan: reap norns' own audio procs by exact name so the fresh sclang
+# claims 57120 cleanly. (Distinct from fix 3 — this is the port-binding race; that
+# is name resolution. Both end in "nb voices silent, no error".)
+if fuser 57120/udp >/dev/null 2>&1; then
+    echo "norns-panicos: langPort 57120 held by a stale process; reaping" >> "$GAMEDIR/logs/norns.log"
+fi
+for _p in sclang scsynth crone; do
+    pkill -x "$_p" 2>/dev/null && \
+        echo "norns-panicos: reaped stale $_p (freeing langPort 57120)" >> "$GAMEDIR/logs/norns.log"
+done
+fuser 57120/udp >/dev/null 2>&1 && sleep 1   # let the kernel release the socket
+unset _p
+
+# ── sc64 audio fix 3/3: prefer IPv4 for "localhost" name resolution ─────────
+# Every nb mod (polyperc, mxsynths, odashodasho, ...) and matron's own OSC send to
+# osc.send({"localhost", 57120}, ...), and sclang binds its OSCFunc on IPv4
+# 127.0.0.1 only. On this 64-bit image getaddrinfo orders ::1 before 127.0.0.1
+# (systemd-resolved answers first and nsswitch's `resolve [!UNAVAIL=return]`
+# bypasses the correct /etc/hosts), so liblo sends every note to ::1 — dropped with
+# no error. Result: all nb voices silent while engine-based voices still work.
+# Real norns resolves localhost->127.0.0.1, which is why scripts mute only here.
+# gai.conf raises IPv4-mapped precedence so 127.0.0.1 sorts first. Idempotent;
+# matron/sclang read gai.conf only at start, so this must run pre-launch.
+if ! grep -qs "precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null; then
+    cat > /etc/gai.conf <<'GAI_EOF'
+# norns-panicos: prefer IPv4 so osc.send({"localhost", 57120}, ...) reaches the
+# IPv4-only sclang OSC listener. Default ::1-first resolution silently mutes
+# every osc-based nb voice. Default precedence table, IPv4-mapped row -> 100.
+label  ::1/128       0
+label  ::/0          1
+label  2002::/16     2
+label ::/96          3
+label ::ffff:0:0/96  4
+precedence  ::1/128       50
+precedence  ::/0          40
+precedence  2002::/16     30
+precedence ::/96          20
+precedence ::ffff:0:0/96  100
+GAI_EOF
+    echo "norns-panicos: wrote /etc/gai.conf (prefer IPv4 for localhost OSC)" >> "$GAMEDIR/logs/norns.log"
+fi
 
 $GPTOKEYB "norns-panicos" &
 pm_platform_helper "./bin/norns-panicos"
