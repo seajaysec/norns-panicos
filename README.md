@@ -6,6 +6,26 @@ the Ableton Move via Push 2). A native SDL2 host (`src/norns-panicos.c`) runs th
 real norns stack (matron, crone, sclang, maiden) and maps the device's gamepad
 to the three encoders and three keys norns is built around.
 
+## Install
+
+Grab `norns-panicos.zip` (from a [release](../../releases), or the
+`norns-panicos-package` artifact of a green
+[build-panicos run](../../actions)) — the zip is fully self-contained, no
+on-device downloads.
+
+1. Copy the zip into `roms/ports/PortMaster/autoinstall/` on the device's SD
+   card (or `scp` it to `/storage/roms/ports/PortMaster/autoinstall/`).
+2. Launch **PortMaster** on the device — it installs the zip automatically.
+3. **Norns** now appears in the Ports list. First launch takes a little longer
+   (it seeds config, patches audio latency, and may restart the audio stack once).
+
+Manual alternative: unzip directly into `roms/ports/` so `Norns.sh`,
+`control.txt`, and `norns/` sit at that level.
+
+To build the package yourself: `./scripts/build-panicos.sh` (Docker, builds
+norns from source — fastest on an arm64 host), or trigger the
+`build-panicos` GitHub Actions workflow and download the artifact.
+
 ## Controls
 
 Mapping is fully configurable in `<port>/norns/cfg/controls.conf` (no rebuild) —
