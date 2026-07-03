@@ -3,6 +3,6 @@ Porter=djhardrich
 Locations.consoles=ports
 Genres=music
 Description=Monome Norns sound computer on ARM handhelds.
-porter_url=https://github.com/djhardrich/norns-portmaster
+porter_url=https://github.com/djhardrich/norns-panicos
 Architecture=aarch64
 runtime=none

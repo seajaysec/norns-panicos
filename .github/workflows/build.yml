@@ -9,7 +9,7 @@ name: build-panicos
 on:
   workflow_dispatch:
   push:
-    branches: [feat/handheld-controls-grid-audio]
+    branches: [master, feat/handheld-controls-grid-audio]
     paths:
       - 'src/**'
       - 'patches/**'
